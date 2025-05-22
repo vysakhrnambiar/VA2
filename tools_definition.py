@@ -6,6 +6,7 @@ SEND_EMAIL_SUMMARY_TOOL_NAME = "send_email_discussion_summary"
 RAISE_TICKET_TOOL_NAME = "raise_ticket_for_missing_knowledge"
 GET_BOLT_KB_TOOL_NAME = "get_bolt_knowledge_base_info"
 GET_DTC_KB_TOOL_NAME = "get_dtc_knowledge_base_info"
+DISPLAY_ON_INTERFACE_TOOL_NAME = "display_on_interface" # New tool name
 
 # --- Tool Definitions ---
 
@@ -60,16 +61,16 @@ TOOL_RAISE_TICKET = {
     "parameters": {
         "type": "object",
         "properties": {
-            "user_query": { # Renamed for clarity
+            "user_query": {
                 "type": "string",
                 "description": "The specific question or topic the user asked about that was not found in the knowledge base."
             },
-            "additional_context": { # Renamed for clarity
+            "additional_context": {
                 "type": "string",
                 "description": "Any relevant context from the conversation that might help the admin understand the user's need for this missing information. Be concise."
             }
         },
-        "required": ["user_query"] # additional_context can be optional
+        "required": ["user_query"]
     }
 }
 
@@ -80,7 +81,7 @@ TOOL_GET_BOLT_KB = {
     "parameters": {
         "type": "object",
         "properties": {
-            "query_topic": { # Renamed for clarity
+            "query_topic": {
                 "type": "string",
                 "description": "The specific topic or keywords from the user's question about Bolt to search for in the knowledge base (e.g., 'Bolt revenue yesterday', 'Bolt promotions', 'Bolt total orders March'). Be specific."
             }
@@ -96,7 +97,7 @@ TOOL_GET_DTC_KB = {
     "parameters": {
         "type": "object",
         "properties": {
-            "query_topic": { # Renamed for clarity
+            "query_topic": {
                 "type": "string",
                 "description": "The specific topic or keywords from the user's question about DTC to search for in the knowledge base (e.g., 'DTC fleet size', 'DTC airport transfer revenue', 'DTC contact'). Be specific."
             }
@@ -105,11 +106,85 @@ TOOL_GET_DTC_KB = {
     }
 }
 
+# New Tool Definition for Displaying on Interface
+TOOL_DISPLAY_ON_INTERFACE = {
+    "type": "function",
+    "name": DISPLAY_ON_INTERFACE_TOOL_NAME,
+    "description": (
+        "Sends structured data to a connected web interface for visual display. "
+        "Use this tool when a visual representation (text, markdown, or graph) would enhance the user's understanding. "
+        "The web interface can display markdown (including tables) and various chart types (bar, line, pie)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "display_type": {
+                "type": "string",
+                "enum": ["markdown", "graph_bar", "graph_line", "graph_pie"],
+                "description": "The type of content to display. 'markdown' for text, lists, and tables. 'graph_bar', 'graph_line', or 'graph_pie' for charts."
+            },
+            "title": {
+                "type": "string",
+                "description": "An optional title for the content. For graphs, this is the chart title. For markdown, it can be a main heading (e.g., '## My Title')."
+            },
+            "data": {
+                "type": "object",
+                "description": "The actual data payload, structured according to the 'display_type'. See examples for each type.",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "For 'markdown' display_type: The full markdown string. Can include headings, lists, bold/italic text, and tables (e.g., '| Header1 | Header2 |\\n|---|---|\\n| Val1 | Val2 |')."
+                    },
+                    "labels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For graph types: An array of strings for the X-axis labels (bar, line) or segment labels (pie)."
+                    },
+                    "datasets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string", "description": "Name of this dataset (e.g., 'Sales Q1', 'Temperature')."},
+                                "values": {"type": "array", "items": {"type": "number"}, "description": "Array of numerical data points corresponding to 'labels'."}
+                            },
+                            "required": ["label", "values"]
+                        },
+                        "description": "For graph types: An array of dataset objects. Each object contains a label for the dataset and its corresponding values. For pie charts, typically only one dataset is used."
+                    },
+                    "options": { # LLM can suggest general options
+                        "type": "object",
+                        "properties": {
+                            "animated": {"type": "boolean", "description": "Suggest if the graph should be animated (if supported by the frontend). Default: true."},
+                            "x_axis_label": {"type": "string", "description": "Optional label for the X-axis of bar or line charts."},
+                            "y_axis_label": {"type": "string", "description": "Optional label for the Y-axis of bar or line charts."}
+                        },
+                        "description": "Optional: General display options or hints for the frontend, like animation or axis labels for graphs."
+                    }
+                },
+                "description_detailed_examples": ( # Custom field for our reference, not for OpenAI schema
+                    "Example for 'markdown': data: { 'content': '# Report Title\\n- Point 1\\n- Point 2\\n| Col A | Col B |\\n|---|---|\\n| 1 | 2 |' }\n"
+                    "Example for 'graph_bar': data: { 'labels': ['Jan', 'Feb'], 'datasets': [{'label': 'Revenue', 'values': [100, 150]}], 'options': {'x_axis_label': 'Month'} }\n"
+                    "Example for 'graph_pie': data: { 'labels': ['Slice A', 'Slice B'], 'datasets': [{'label': 'Distribution', 'values': [60, 40]}] }"
+                )
+            }
+        },
+        "required": ["display_type", "data"]
+        # Depending on display_type, specific fields within 'data' become effectively required.
+        # For example, if display_type is 'markdown', data.content is required.
+        # If display_type is 'graph_bar', data.labels and data.datasets are required.
+        # The LLM needs to be prompted/trained to understand this conditional requirement.
+        # We can also add logic in the tool handler to validate this.
+    }
+}
+
+
 # List of all tools to be passed to OpenAI
 ALL_TOOLS = [
     TOOL_END_CONVERSATION,
     TOOL_SEND_EMAIL_SUMMARY,
     TOOL_RAISE_TICKET,
     TOOL_GET_BOLT_KB,
-    TOOL_GET_DTC_KB
+    TOOL_GET_DTC_KB,
+    TOOL_DISPLAY_ON_INTERFACE # Add the new tool here
 ]

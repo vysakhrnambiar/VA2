@@ -4,11 +4,18 @@ import json
 import base64
 import time 
 
+# Imports from our other new modules
+from tools_definition import ALL_TOOLS, END_CONVERSATION_TOOL_NAME 
+# Tool name constants for direct reference if needed (e.g. in logging)
 from tools_definition import (
-    ALL_TOOLS, 
-    END_CONVERSATION_TOOL_NAME 
+    SEND_EMAIL_SUMMARY_TOOL_NAME, 
+    RAISE_TICKET_TOOL_NAME,
+    GET_BOLT_KB_TOOL_NAME,
+    GET_DTC_KB_TOOL_NAME,
+    DISPLAY_ON_INTERFACE_TOOL_NAME
 )
 from tool_executor import TOOL_HANDLERS 
+from llm_prompt_config import INSTRUCTIONS as LLM_DEFAULT_INSTRUCTIONS # Import instructions
 
 class OpenAISpeechClient:
     def __init__(self, ws_url_param, headers_param, main_log_fn, pcm_player, 
@@ -41,40 +48,14 @@ class OpenAISpeechClient:
         self.log("Client: Connected to OpenAI Realtime API")
         self.connected = True 
         
-        # --- MODIFIED LLM INSTRUCTIONS ---
-        llm_instructions = (
-            "You are a voice assistant for DTC (Dubai Taxi Corporation), Limousine Services, and Bolt (a ride-hailing partner). "
-            "Your primary goal is to answer user queries. "
-            
-            "VOICE CHARACTERISTICS: "
-            "- Voice Affect: Speak with a very fast pace like you are in a hurry be very fast when you talk like you are running"
-            "- You have an egyptian accent and over tone"
-            "- Pacing: Speak at a high speed of at least 150 words per minute. Maintain a fast-paced delivery while still using brief, intentional pauses during critical moments (e.g., 'I'm checking that for you now...') to signal attention and care, but never sound robotic. "
-            "- Emotion: Express restrained, reassuring intensity. Use subtle tension in your tone when urgency is present, but always remain professional. Apply slight vocal compression when stakes are high. "
-            "- Emphasis: Highlight emotional or sensory cues that matter to the caller's situation (e.g., 'We understand your concern...', 'Your request is being handled with priority...', 'You're not alone in this...'). "
-            "Use slight stress on verbs to imply action is being taken: 'investigating,' 'resolving,' 'escalating.' "
-            "- Pronunciation: Use crisp, softened consonants for warmth. Slightly stretch vowels on reassurances (e.g., 'Please stay with me while I check...', 'We'll get through this together...'). "
-            "- Pauses: Insert meaningful pauses after key lines to signal empathy or urgency (e.g., 'I see that now... [pause]... thank you for your patience.', 'There's something you should know... [pause]... we're handling this with care.'). "
-            
-            "IMPORTANT: When you need to fetch information using 'get_dtc_knowledge_base_info' or 'get_bolt_knowledge_base_info', "
-            "FIRST, inform the user what you are about to do (e.g., 'Let me check the DTC knowledge base for that information.' or 'Okay, I'll look up the Bolt sales data.'). "
-            "Call the appropriate function with a specific 'query_topic' derived from the user's question to get the necessary data. "
-            "If the user asks to compare DTC and Bolt, you may need to call both functions. "
-            "Once you receive the information from the tool via a 'function_call_output', immediately use that information to answer the user's query naturally and concisely"
-            "If information is not found after checking the knowledge bases, explicitly state that the information is unavailable, then ask the user if they want to raise a ticket. If they agree, call 'raise_ticket_for_missing_knowledge'. "
-            "If the user asks to email a summary of the discussion, call 'send_email_discussion_summary'. "
-            "When a conversation turn is complete, or the user says goodbye or asks you to stop, you MUST call the function "
-            f"'{END_CONVERSATION_TOOL_NAME}' to return to a passive listening state, providing a clear reason. "
-            "Be concise in your responses unless asked for more detail. "
-            "When providing information from a knowledge base, synthesize it naturally."
-            "You will change your pitch and sound to sound like a call center worker adding sound like ah hmm to make your reply more human like"
-        )
-        # --- END OF MODIFIED LLM INSTRUCTIONS ---
+        # Use the imported instructions
+        llm_instructions = LLM_DEFAULT_INSTRUCTIONS
+        # Your specific voice characteristic instructions are now in llm_prompt_config.py
 
         session_config = {
             "type": "session.update",
             "session": {
-                "voice": "ash", 
+                "voice": "ash", # As per your working version
                 "turn_detection": {"type": "server_vad"},
                 "input_audio_format": "pcm16", 
                 "output_audio_format": "pcm16",
@@ -84,18 +65,22 @@ class OpenAISpeechClient:
             }
         }
         ws.send(json.dumps(session_config))
-        self.log(f"Client: Session config sent (Input: {self.INPUT_RATE}Hz, Player: {self.OUTPUT_RATE}Hz, Tools defined: {len(ALL_TOOLS)}).")
+        self.log(f"Client: Session config sent. Instructions imported. Length: {len(llm_instructions)} chars. Voice: 'ash'.")
 
     def on_message(self, ws, message_str):
         msg = json.loads(message_str)
         msg_type = msg.get("type")
 
+        # Conditional logging as in your working version
         if msg_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
             if msg_type in ["response.output.delta", 
                             "response.function_call_arguments.delta", "response.function_call_arguments.done", 
                             "conversation.item.created", "response.output_item.done", "response.done", 
                             "error", "session.created"]:
-                self.log(f"Client RAW_MSG TYPE: {msg_type} | CONTENT: {json.dumps(msg, indent=2)}")
+                # For very long messages, avoid indenting to keep log concise
+                log_content = json.dumps(msg, indent=2) if len(message_str) < 1000 else str(msg)
+                self.log(f"Client RAW_MSG TYPE: {msg_type} | CONTENT: {log_content}")
+
 
         if msg_type == "response.output.delta":
             item_type = msg.get("item_type")
@@ -109,12 +94,8 @@ class OpenAISpeechClient:
                             fn_name = tc_obj.get('function',{}).get('name')
                             fn_args_partial = tc_obj.get('function',{}).get('arguments',"")
                             if call_id and fn_name:
-                                self.log(f"Client: LLM INTENDS TOOL: Name='{fn_name}', ID='{call_id}', ArgsPart='{fn_args_partial}'.")
+                                # self.log(f"Client: LLM INTENDS TOOL: Name='{fn_name}', ID='{call_id}', ArgsPart='{fn_args_partial}'.") # Can be noisy
                                 self.accumulated_tool_args[call_id] = self.accumulated_tool_args.get(call_id, "") + fn_args_partial
-            # If item_type is "text", it means the LLM is generating text/speech output.
-            # This could be the pre-tool announcement.
-            # elif item_type == "text":
-                # self.log(f"Client: LLM Text/Speech Delta: {delta_content}")
             return 
 
         elif msg_type == "response.function_call_arguments.delta":
@@ -129,10 +110,12 @@ class OpenAISpeechClient:
             
             final_args_str_from_event = msg.get("arguments", "{}")
             final_accumulated_args = self.accumulated_tool_args.pop(call_id, "{}") 
-            final_args_to_use = final_args_str_from_event
+
+            final_args_to_use = final_args_str_from_event # Default to event's args
+            # Use accumulated if event's is empty/placeholder AND accumulated has content
             if (not final_args_str_from_event or final_args_str_from_event == "{}") and \
                (final_accumulated_args and final_accumulated_args != "{}"):
-                self.log(f"Client: Using accumulated args for Call_ID {call_id}. Event args: '{final_args_str_from_event}', Accumulated: '{final_accumulated_args}'")
+                self.log(f"Client: Using accumulated args for Call_ID {call_id}.")
                 final_args_to_use = final_accumulated_args
             
             if function_to_execute_name:
@@ -143,6 +126,27 @@ class OpenAISpeechClient:
                         parsed_args = json.loads(final_args_to_use) 
                 except json.JSONDecodeError as e:
                     self.log(f"Client WARN: Could not decode JSON arguments for {function_to_execute_name}: '{final_args_to_use}'. Error: {e}")
+                    # Send error back to LLM if args are invalid
+                    error_tool_result_str = f"Invalid JSON arguments provided for tool {function_to_execute_name}. Error: {str(e)}"
+                    error_result_payload = {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output", 
+                            "call_id": call_id,
+                            # Output for LLM should preferably be a string. If error_tool_result_str is too complex, simplify.
+                            "output": json.dumps({"error": error_tool_result_str }) 
+                        }
+                    }
+                    try:
+                        ws.send(json.dumps(error_result_payload))
+                        self.log(f"Client: Sent arg parsing error as 'conversation.item.create' for Call_ID='{call_id}'.")
+                        # Trigger LLM to respond to this error
+                        response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": "ash", "output_audio_format": "pcm16"}}
+                        ws.send(json.dumps(response_create_payload))
+                        self.log("Client: Sent 'response.create' to trigger assistant response after arg error.")
+                    except Exception as e_send_err:
+                        self.log(f"Client ERROR: Could not send arg parsing error back to LLM: {e_send_err}")
+                    return # Stop processing this tool call
 
                 if function_to_execute_name == END_CONVERSATION_TOOL_NAME:
                     reason = parsed_args.get("reason", "No reason specified by LLM.")
@@ -158,50 +162,52 @@ class OpenAISpeechClient:
                 elif function_to_execute_name in TOOL_HANDLERS:
                     handler_function = TOOL_HANDLERS[function_to_execute_name]
                     self.log(f"Client: Calling tool executor for '{function_to_execute_name}'...")
-                    tool_result_str = f"Error: Tool '{function_to_execute_name}' execution failed." 
                     try:
                         tool_result_str = handler_function(**parsed_args, config=self.config) 
-                        self.log(f"Client: Tool '{function_to_execute_name}' executed locally. Result snippet: '{tool_result_str[:200]}...'")
+                        self.log(f"Client: Tool '{function_to_execute_name}' executed locally. Result snippet: '{str(tool_result_str)[:200]}...'")
                         
+                        # YOUR WORKING METHOD FOR SENDING TOOL RESULTS:
                         tool_response_payload = {
                             "type": "conversation.item.create",
                             "item": {
                                 "type": "function_call_output", 
                                 "call_id": call_id,            
-                                "output": tool_result_str      
+                                "output": str(tool_result_str) # Ensure it's a string      
                             }
                         }
                         ws.send(json.dumps(tool_response_payload))
-                        self.log(f"Client: Sent tool result as 'conversation.item.create' (type: function_call_output) for Call_ID='{call_id}'.")
+                        self.log(f"Client: Sent tool result as 'conversation.item.create' (item type: function_call_output) for Call_ID='{call_id}'.")
                         
                         # Send response.create to trigger assistant to generate a response
                         response_create_payload = {
                             "type": "response.create",
                             "response": {
                                 "modalities": ["text", "audio"],
-                                "voice": "ash",
+                                "voice": "ash", # Your preferred voice
                                 "output_audio_format": "pcm16"
                             }
                         }
                         ws.send(json.dumps(response_create_payload))
-                        self.log("Client: Sent 'response.create' to trigger assistant response.")
+                        self.log("Client: Sent 'response.create' to trigger assistant response after tool success.")
 
                     except Exception as e_tool_exec:
                         self.log(f"Client ERROR: Exception during execution of tool '{function_to_execute_name}': {e_tool_exec}")
                         error_tool_result_str = f"An error occurred while executing the tool '{function_to_execute_name}': {str(e_tool_exec)}"
+                        # YOUR WORKING METHOD FOR SENDING TOOL ERRORS:
                         error_result_payload = {
                             "type": "conversation.item.create",
                             "item": {
                                 "type": "function_call_output", 
                                 "call_id": call_id,
+                                # OpenAI expects the 'output' to be a string representation of the tool's result.
+                                # If sending structured error info, ensure it's a string (e.g., JSON string).
                                 "output": json.dumps({"error": error_tool_result_str}) 
                             }
                         }
                         try:
                             ws.send(json.dumps(error_result_payload))
-                            self.log(f"Client: Sent tool execution error as 'conversation.item.create' (type: function_call_output) for Call_ID='{call_id}'.")
+                            self.log(f"Client: Sent tool execution error as 'conversation.item.create' (item type: function_call_output) for Call_ID='{call_id}'.")
                             
-                            # Send response.create to trigger assistant to generate a response after error
                             response_create_payload = {
                                 "type": "response.create",
                                 "response": {
@@ -211,7 +217,7 @@ class OpenAISpeechClient:
                                 }
                             }
                             ws.send(json.dumps(response_create_payload))
-                            self.log("Client: Sent 'response.create' to trigger assistant response after error.")
+                            self.log("Client: Sent 'response.create' to trigger assistant response after tool error.")
                         except Exception as e_send_err:
                             self.log(f"Client ERROR: Could not send tool error back to LLM: {e_send_err}")
                 else:
@@ -222,56 +228,48 @@ class OpenAISpeechClient:
         elif msg_type == "session.created":
             self.session_id = msg.get('session', {}).get('id')
             self.log(f"Client: OpenAI Session created: {self.session_id}")
-            # Initial user prompt handled by main_app after connection.
+            # Guidance message for user:
+            if self.get_app_state() == "LISTENING_FOR_WAKEWORD" and self.wake_word_active:
+                 print(f"\n*** CLIENT: Listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' ***\n")
+            else:
+                 print(f"\n*** CLIENT: Speak now to interact with OpenAI (WW inactive or sending mode). ***\n")
+
         
         elif msg_type == "response.audio.delta":
             audio_data_b64 = msg.get("delta")
             if audio_data_b64:
                 audio_data_bytes = base64.b64decode(audio_data_b64)
-                self.player.play(audio_data_bytes) # This will play the pre-tool announcement if LLM sends it
+                self.player.play(audio_data_bytes)
         
         elif msg_type == "response.audio.done":
             self.log("Client: OpenAI Audio reply 'done' received.")
             self.player.flush() 
-            # This event signifies the end of an audio segment from the LLM.
-            # This could be the pre-tool announcement OR the final answer after a tool result.
-            # The main logic for "Ready for your next query" or "Listening for wake word"
-            # should primarily be driven by state changes from tool calls (END_CONVERSATION)
-            # or after the LLM processes a tool result and finishes its *final* spoken response.
-
             current_st_after_audio = self.get_app_state() 
             if current_st_after_audio == "LISTENING_FOR_WAKEWORD": 
-                self.log("Client: Audio done, state is LISTENING_FOR_WAKEWORD (e.g. END_CONVERSATION tool called).")
+                self.log("Client: Audio done, state is LISTENING_FOR_WAKEWORD.")
             elif current_st_after_audio == "SENDING_TO_OPENAI": 
-                # If we are still in SENDING_TO_OPENAI, it implies this audio.done might be for
-                # a pre-tool announcement, or the LLM is just continuing a multi-part response.
-                # Or it's the final answer after a tool.
-                # The "Ready for your next query" is appropriate if this was the *final* answer of a turn.
-                # This can be tricky to distinguish from a pre-tool announcement's audio.done.
-                # For now, we'll assume if no tool call processing is actively pending, this is the end of a turn.
                 self.log(f"Client: Audio done. Current state is SENDING_TO_OPENAI.")
-                # The prompt for the next query is now more conditional.
-                # If a tool call was just made and result sent, we are waiting for LLM's *next* audio.
-                # If this audio.done IS for the final response after a tool, then the prompt is good.
-                # This might need more sophisticated state to differentiate.
-                # For now, let's keep the "Ready for next query" prompt here,
-                # assuming this audio.done is the end of the LLM's current speech turn.
-                # If the LLM immediately makes another tool call after this, that flow will take over.
-                print(f"\n*** Ready for your next query. Speak now. (Ctrl+C to exit) ***\n")
+                # This prompt is a general "assistant finished speaking" indicator.
+                # If it was a pre-tool announcement, the LLM will soon make the tool call.
+                # If it was the final answer, user can speak next.
+                print(f"\n*** Assistant has finished speaking. Ready for your next query. (Ctrl+C to exit) ***\n")
         
         elif msg_type == "input_audio_buffer.speech_started":
-            self.log("Client: OpenAI VAD: User speech started.") 
+            self.log("Client: OpenAI VAD: User speech detected by server.") 
             if self.get_app_state() == "SENDING_TO_OPENAI": 
                 self.player.clear() 
         
         elif msg_type == "input_audio_buffer.speech_stopped":
-            self.log("Client: OpenAI VAD: User speech stopped.")
+            self.log("Client: OpenAI VAD: User speech stopped detection by server.")
         
         elif msg_type == "error":
-            self.log(f"Client ERROR from OpenAI. Message: {msg.get('error', {}).get('message')}")
-            if "session" in msg.get('error', {}).get('message', "").lower():
-                self.log("Client: Critical OpenAI session error. Connection may be unusable.")
+            error_message = msg.get('error', {}).get('message', 'Unknown error from OpenAI.')
+            self.log(f"Client ERROR from OpenAI. Message: {error_message}")
+            if "session" in error_message.lower() or "authorization" in error_message.lower():
+                self.log("Client: Critical OpenAI session or auth error. Connection may be unusable.")
                 self.connected = False 
+                if hasattr(self.ws_app, 'close'): self.ws_app.close()
+
 
     def on_error(self, ws, error): 
         self._log_section("WebSocket ERROR") 
@@ -286,7 +284,12 @@ class OpenAISpeechClient:
 
     def run_client(self): 
         self.log(f"Client: Attempting WebSocket connection to: {self.ws_url}")
-        import websocket 
+        try:
+            import websocket 
+        except ImportError:
+            self.log("CRITICAL: websocket-client library not found. Please install it: pip install websocket-client")
+            return 
+
         self.ws_app = websocket.WebSocketApp( 
             self.ws_url,
             header=self.headers,
@@ -296,3 +299,13 @@ class OpenAISpeechClient:
             on_close=self.on_close
         )
         self.ws_app.run_forever()
+
+    def close_connection(self): 
+        self.log("Client: close_connection() called.")
+        if self.ws_app:
+            self.log("Client: Closing WebSocket connection from client side.")
+            try:
+                self.ws_app.close()
+            except Exception as e:
+                self.log(f"Client: Error during ws_app.close(): {e}")
+        self.connected = False

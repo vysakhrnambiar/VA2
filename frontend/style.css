@@ -1,0 +1,182 @@
+/* frontend/style.css */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f4;
+    color: #333;
+    line-height: 1.6;
+}
+
+.container {
+    width: 80%;
+    margin: auto;
+    overflow: hidden;
+    padding: 20px;
+    background-color: #fff;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+header {
+    background: #333;
+    color: #fff;
+    padding: 1rem 0;
+    text-align: center;
+    border-bottom: #0779e4 3px solid;
+}
+
+header h1 {
+    margin: 0;
+    padding-bottom: 10px;
+}
+
+#ws-status {
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.status-connected {
+    color: #28a745; /* Green */
+    background-color: #e9f7ef;
+}
+
+.status-disconnected {
+    color: #dc3545; /* Red */
+    background-color: #fdecea;
+}
+
+.status-error {
+    color: #ffc107; /* Yellow/Orange */
+    background-color: #fff8e1;
+}
+
+#display-area {
+    margin-top: 20px;
+    padding: 15px;
+    background: #e9ecef;
+    min-height: 300px;
+    border-radius: 5px;
+    overflow-y: auto; /* Add scroll for many messages */
+    max-height: 60vh; /* Limit height */
+}
+
+.display-item {
+    background: #fff;
+    padding: 10px;
+    margin-bottom: 10px;
+    border-left: 5px solid #007bff;
+    border-radius: 3px;
+}
+
+.message-header {
+    font-size: 0.9em;
+    color: #555;
+    margin-bottom: 5px;
+    border-bottom: 1px dotted #ccc;
+    padding-bottom: 3px;
+}
+
+.raw-json {
+    background-color: #f8f9fa;
+    padding: 8px;
+    border-radius: 4px;
+    font-family: monospace;
+    white-space: pre-wrap; /* Ensure long lines wrap */
+    word-break: break-all; /* Break long words/strings */
+}
+
+.system-message {
+    color: #666;
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+.error-message {
+    color: #c00;
+    font-weight: bold;
+}
+
+.placeholder {
+    color: #777;
+    text-align: center;
+    padding-top: 50px;
+    font-style: italic;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    margin-top: 20px;
+    color: #777;
+    font-size: 0.9em;
+}
+
+
+#display-area {
+    /* ... existing styles ... */
+    display: flex; /* Helps with centering if only one item */
+    flex-direction: column; /* Stack items vertically */
+    align-items: center; /* Center items like graphs horizontally */
+}
+
+.display-item {
+    /* ... existing styles ... */
+    width: 100%; /* Allow items to take full width of display-area */
+    box-sizing: border-box; /* Include padding and border in the element's total width and height */
+}
+
+.markdown-content {
+    background: #fff;
+    padding: 15px 20px;
+    margin-bottom: 15px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    width: 90%; /* Or max-width as preferred */
+    max-width: 800px; /* Example max width */
+    text-align: left; /* Align markdown content to the left */
+}
+.markdown-content h1, .markdown-content h2, .markdown-content h3 {
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+    color: #333;
+}
+.markdown-content table {
+    width: auto; /* Let table size itself, or 100% */
+    border-collapse: collapse;
+    margin-top: 1em;
+    margin-bottom: 1em;
+}
+.markdown-content th, .markdown-content td {
+    border: 1px solid #ccc;
+    padding: 8px;
+    text-align: left;
+}
+.markdown-content th {
+    background-color: #f0f0f0;
+}
+.markdown-content ul, .markdown-content ol {
+    padding-left: 20px;
+}
+
+.graph-content {
+    background: #fff;
+    padding: 20px;
+    margin-bottom: 15px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    width: 90%; /* Control graph width */
+    max-width: 700px; /* Max width for larger screens */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+.chart-title {
+    text-align: center;
+    margin-bottom: 15px;
+    font-size: 1.4em;
+    color: #333;
+}
+
+.unknown-type pre {
+    background-color: #ffecec; /* Highlight unknown type dumps */
+    border: 1px solid #f5c6cb;
+}

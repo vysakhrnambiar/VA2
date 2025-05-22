@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant Display</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Add Chart.js and Marked.js CDN links -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Voice Assistant Visual Interface</h1>
+            <p>WebSocket Status: <span id="ws-status" class="status-disconnected">Not Connected</span></p>
+        </header>
+        <main id="display-area">
+            <p class="placeholder">Waiting for data from the assistant...</p>
+        </main>
+        <footer>
+            <p>Realtime Voice Assistant Display</p>
+        </footer>
+    </div>
+    <script src="/static/script.js"></script> 
+</body>
+</html>
