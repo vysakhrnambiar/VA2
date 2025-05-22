@@ -102,17 +102,21 @@ CHANNELS = 1
 # --- State Management ---
 STATE_LISTENING_FOR_WAKEWORD = "LISTENING_FOR_WAKEWORD"
 STATE_SENDING_TO_OPENAI = "SENDING_TO_OPENAI"
-current_app_state = STATE_SENDING_TO_OPENAI 
-if wake_word_active: 
+current_app_state = STATE_SENDING_TO_OPENAI
+state_just_changed_to_sending = False  # Flag to track state change
+if wake_word_active:
     current_app_state = STATE_LISTENING_FOR_WAKEWORD
 state_lock = threading.Lock()
 
-def set_app_state_main(new_state): 
-    global current_app_state
+def set_app_state_main(new_state):
+    global current_app_state, state_just_changed_to_sending
     with state_lock:
         if current_app_state != new_state:
             log(f"App State changed: {current_app_state} -> {new_state}")
             current_app_state = new_state
+            # Set flag when changing to SENDING_TO_OPENAI
+            if new_state == STATE_SENDING_TO_OPENAI:
+                state_just_changed_to_sending = True
 def get_app_state_main(): 
     with state_lock:
         return current_app_state
@@ -240,20 +244,35 @@ def continuous_audio_pipeline(openai_client_ref):
                     log("WARN: In WW listening state but cannot process (scipy/detector issue).")
                     continue 
             
-            if get_app_state_main() == STATE_SENDING_TO_OPENAI: 
-                if hasattr(openai_client_ref, 'ws_app') and openai_client_ref.ws_app and openai_client_ref.connected: 
+            if get_app_state_main() == STATE_SENDING_TO_OPENAI:
+                if hasattr(openai_client_ref, 'ws_app') and openai_client_ref.ws_app and openai_client_ref.connected:
                     audio_b64_str = base64.b64encode(audio_to_send_to_openai).decode('utf-8')
                     audio_msg_to_send = {"type": "input_audio_buffer.append", "audio": audio_b64_str}
                     try:
                         if hasattr(openai_client_ref.ws_app, 'send'):
                              openai_client_ref.ws_app.send(json.dumps(audio_msg_to_send))
+                             
+                             # Check if state just changed and send response.create
+                             global state_just_changed_to_sending
+                             if state_just_changed_to_sending:
+                                 response_create_payload = {
+                                     "type": "response.create",
+                                     "response": {
+                                         "modalities": ["text", "audio"],
+                                         "voice": "ash",
+                                         "output_audio_format": "pcm16"
+                                     }
+                                 }
+                                 openai_client_ref.ws_app.send(json.dumps(response_create_payload))
+                                 log("Sent initial 'response.create' after state change to trigger assistant")
+                                 state_just_changed_to_sending = False  # Reset flag
                         else:
                              log("ERROR: openai_client_ref.ws_app not available or has no send method.")
-                    except Exception as e_send: 
+                    except Exception as e_send:
                         log(f"Exception during WebSocket send from main_app: {e_send}")
                         import websocket # For checking exception type
                         if isinstance(e_send, websocket.WebSocketConnectionClosedException):
-                            openai_client_ref.connected = False 
+                            openai_client_ref.connected = False
     except KeyboardInterrupt:
         log("KeyboardInterrupt in audio pipeline.")
     except Exception as e_pipeline:
