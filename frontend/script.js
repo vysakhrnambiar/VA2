@@ -35,32 +35,75 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+   
     function renderMarkdown(payload) {
         clearDisplayArea();
         const markdownContainer = document.createElement('div');
         markdownContainer.classList.add('markdown-content');
         
-        let htmlContent = "";
-        if (payload.title) {
-            // Marked.js will convert '#' to h1, '##' to h2 etc.
-            // Ensure the title is treated as a heading if not already.
-            let titleMarkdown = payload.title;
-            if (!payload.title.startsWith("#")) {
-                titleMarkdown = `<h2>${payload.title}</h2>`; // Or use a specific heading level
-                 htmlContent += marked.parse(titleMarkdown);
+        let htmlOutput = "";
+        let mainTitleTextFromPayload = "";
+
+        // 1. Process and render the main title from payload.title
+        if (payload.title && payload.title.trim() !== "") {
+            mainTitleTextFromPayload = payload.title.trim();
+            let titleHtml;
+            // If payload.title itself is markdown (e.g., "## My Title"), parse it.
+            // Otherwise, wrap plain text in <h2>.
+            if (mainTitleTextFromPayload.startsWith("#")) {
+                titleHtml = marked.parse(mainTitleTextFromPayload);
             } else {
-                 htmlContent += marked.parse(titleMarkdown);
+                titleHtml = marked.parse(`<h2>${mainTitleTextFromPayload}</h2>`);
             }
-           
+            htmlOutput += titleHtml;
         }
-        if (payload.content) {
-            htmlContent += marked.parse(payload.content);
+
+        // 2. Process and render payload.content, attempting to avoid title duplication
+        if (payload.content && payload.content.trim() !== "") {
+            let contentToParse = payload.content.trim();
+
+            // Heuristic to prevent title duplication:
+            // If a mainTitleTextFromPayload was rendered, and contentToParse starts with
+            // the same text (ignoring markdown heading characters and case for comparison),
+            // then remove that first line from contentToParse.
+            if (mainTitleTextFromPayload !== "") {
+                const firstLineOfContent = contentToParse.split('\n')[0].trim();
+                // Normalize both titles for comparison (remove #, trim, lowercase)
+                const normalizedMainTitle = mainTitleTextFromPayload.replace(/^#+\s*/, '').toLowerCase();
+                const normalizedFirstLineContent = firstLineOfContent.replace(/^#+\s*/, '').toLowerCase();
+
+                if (normalizedFirstLineContent === normalizedMainTitle) {
+                    // The first line of content is a duplicate of the main title. Skip it.
+                    const lines = contentToParse.split('\n');
+                    lines.shift(); // Remove the first line
+                    // Remove any subsequent empty lines that might have been after the heading
+                    while (lines.length > 0 && lines[0].trim() === "") {
+                        lines.shift();
+                    }
+                    contentToParse = lines.join('\n');
+                    if (contentToParse.trim() !== "") { // Check if there's remaining content
+                         htmlOutput += marked.parse(contentToParse);
+                    }
+                    console.log("renderMarkdown: Heuristically removed duplicate title from content body.");
+                } else {
+                    // First line is different, parse all content
+                    htmlOutput += marked.parse(contentToParse);
+                }
+            } else {
+                // No mainTitleTextFromPayload, so parse all content as is
+                htmlOutput += marked.parse(contentToParse);
+            }
         } else {
-            htmlContent += marked.parse("_No content provided for markdown display._");
+            // Only show "no content" if there was also no title from payload.title
+            if (htmlOutput === "") { 
+                htmlOutput += marked.parse("_No specific content provided for markdown display._");
+            }
         }
-        markdownContainer.innerHTML = htmlContent;
+        
+        markdownContainer.innerHTML = htmlOutput;
         addElementToDisplay(markdownContainer);
     }
+
 
     function renderGraph(type, payload) {
         clearDisplayArea();
