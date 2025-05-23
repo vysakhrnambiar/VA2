@@ -147,7 +147,28 @@ class PCMPlayer:
         try: self.stream.write(self.buffer) 
         except IOError as e: log(f"PCMPlayer IOError during flush: {e}."); self.close()
         finally: self.buffer = b""
-    def clear(self): self.buffer = b"" 
+    def clear(self): 
+        self.buffer = b""
+        if self.stream and hasattr(self.stream, 'is_active') and self.stream.is_active():
+            try:
+                # PyAudio's stop_stream() is non-blocking and tells the stream to stop calling the callback
+                # or to finish playing data in its internal buffer and then stop.
+                # For output streams, it should halt playback more abruptly.
+                # self.stream.stop_stream() # This might be too aggressive if you want to resume later.
+                                          # For barge-in, we want to abort current playback.
+
+                # A more common approach for output streams if stop_stream() isn't suitable
+                # is to ensure no more data is written. Clearing self.buffer does this.
+                # The already written chunk will finish.
+                # If PyAudio's stream has a large internal buffer, this might be an issue.
+                # You could try to see if there's a way to abort the current write or flush its internal buffer.
+                # However, PyAudio's direct control over this is limited.
+                # For most cases, the current chunk finishing is acceptable latency.
+                log("PCMPlayer: Buffer cleared for barge-in.")
+            except Exception as e:
+                log(f"PCMPlayer: Exception during potential stream stop in clear: {e}")
+
+
     def close(self): 
         if self.stream:
             try:
@@ -181,6 +202,8 @@ def continuous_audio_pipeline(openai_client_ref):
     log("Mic stream opened (24kHz).")
     log(f"Audio pipeline started. Initial state: {get_app_state_main()}")
     chunk_counter = 0 
+    last_log_time = time.time()
+    chunks_sent_since_log = 0
     try:
         while True: 
             if not openai_client_ref.connected: 
@@ -234,15 +257,15 @@ def continuous_audio_pipeline(openai_client_ref):
                 else: 
                     # log("WARN: In WW listening state but cannot process (scipy/detector issue).") # Can be noisy
                     continue 
-            
-            if get_app_state_main() == STATE_SENDING_TO_OPENAI: 
+            #log(f"AUDIO_SEND_LOG: Sent 0 audio chunks in last ~2s. Current_State={get_app_state_main()}") 
+            if get_app_state_main() == STATE_SENDING_TO_OPENAI:                
                 if hasattr(openai_client_ref, 'ws_app') and openai_client_ref.ws_app and openai_client_ref.connected: 
                     audio_b64_str = base64.b64encode(audio_to_send_to_openai).decode('utf-8')
                     audio_msg_to_send = {"type": "input_audio_buffer.append", "audio": audio_b64_str}
                     try:
                         if hasattr(openai_client_ref.ws_app, 'send'):
                              openai_client_ref.ws_app.send(json.dumps(audio_msg_to_send))
-                             
+                             chunks_sent_since_log += 1 # Increment counter
                              # Check if state just changed and send response.create
                              if state_just_changed_to_sending:
                                  response_create_payload = {
@@ -254,6 +277,7 @@ def continuous_audio_pipeline(openai_client_ref):
                                      }
                                  }
                                  openai_client_ref.ws_app.send(json.dumps(response_create_payload))
+                                 
                                  log("Sent initial 'response.create' after state change to trigger assistant")
                                  state_just_changed_to_sending = False  # Reset flag
                         else:
@@ -264,6 +288,18 @@ def continuous_audio_pipeline(openai_client_ref):
                         if isinstance(e_send, websocket.WebSocketConnectionClosedException):
                             log("OpenAI WebSocket closed during send. Setting connected=False.")
                             openai_client_ref.connected = False 
+                                # --- NEW: Periodic Logging Logic ---
+                current_time = time.time()
+                if current_time - last_log_time >= 2.0: # Log every 2 seconds
+                    if chunks_sent_since_log > 0:
+                        log(f"AUDIO_SEND_LOG: Sent {chunks_sent_since_log} audio chunks in last ~2s. Current_State={get_app_state_main()}")
+                    else:
+                        # Log even if 0 sent, to confirm the loop is running & check state
+                        log(f"AUDIO_SEND_LOG: Sent 0 audio chunks in last ~2s. Current_State={get_app_state_main()}")
+                    last_log_time = current_time
+                    chunks_sent_since_log = 0
+            # --- END: NEW ---
+                    
     except KeyboardInterrupt:
         log("KeyboardInterrupt in audio pipeline.")
     except Exception as e_pipeline:

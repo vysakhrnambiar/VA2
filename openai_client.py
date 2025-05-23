@@ -1,8 +1,8 @@
 # openai_client.py
-
 import json
 import base64
-import time 
+import time
+import threading # Make sure threading is imported
 
 # Imports from our other new modules
 from tools_definition import ALL_TOOLS, END_CONVERSATION_TOOL_NAME 
@@ -12,10 +12,12 @@ from tools_definition import (
     RAISE_TICKET_TOOL_NAME,
     GET_BOLT_KB_TOOL_NAME,
     GET_DTC_KB_TOOL_NAME,
-    DISPLAY_ON_INTERFACE_TOOL_NAME
+    DISPLAY_ON_INTERFACE_TOOL_NAME,
+    # Make sure to import your new tool name constant here if you've added it
+    # e.g., GET_DAILY_EXECUTIVE_BRIEFING_TOOL_NAME
 )
 from tool_executor import TOOL_HANDLERS 
-from llm_prompt_config import INSTRUCTIONS as LLM_DEFAULT_INSTRUCTIONS # Import instructions
+from llm_prompt_config import INSTRUCTIONS as LLM_DEFAULT_INSTRUCTIONS
 
 class OpenAISpeechClient:
     def __init__(self, ws_url_param, headers_param, main_log_fn, pcm_player, 
@@ -44,19 +46,17 @@ class OpenAISpeechClient:
         self.log(f"\n===== [Client] {title} =====")
 
     def on_open(self, ws): 
+        # ... (on_open logic remains the same) ...
         self._log_section("WebSocket OPEN")
         self.log("Client: Connected to OpenAI Realtime API")
         self.connected = True 
         
-        # Use the imported instructions
         llm_instructions = LLM_DEFAULT_INSTRUCTIONS
-        # Your specific voice characteristic instructions are now in llm_prompt_config.py
-
         session_config = {
             "type": "session.update",
             "session": {
-                "voice": "ash", # As per your working version
-                "turn_detection": {"type": "server_vad"},
+                "voice": "ash",
+                "turn_detection": {"type": "server_vad","interrupt_response": True},
                 "input_audio_format": "pcm16", 
                 "output_audio_format": "pcm16",
                 "tools": ALL_TOOLS, 
@@ -67,22 +67,78 @@ class OpenAISpeechClient:
         ws.send(json.dumps(session_config))
         self.log(f"Client: Session config sent. Instructions imported. Length: {len(llm_instructions)} chars. Voice: 'ash'.")
 
+
+    def _execute_tool_in_thread(self, handler_function, parsed_args, call_id, config, function_name):
+        """
+        Executes a tool in a separate thread and sends the result (or error)
+        and a subsequent response.create message back to the WebSocket.
+        """
+        self.log(f"Client (Thread - {function_name}): Starting execution for Call_ID {call_id}. Args: {parsed_args}")
+        tool_output_for_llm = ""
+        try:
+            tool_result_str = handler_function(**parsed_args, config=config)
+            tool_output_for_llm = str(tool_result_str) # Ensure it's a string
+            self.log(f"Client (Thread - {function_name}): Execution complete. Result snippet: '{tool_output_for_llm[:150]}...'")
+        
+        except Exception as e_tool_exec_thread:
+            self.log(f"Client (Thread - {function_name}) ERROR: Exception during execution: {e_tool_exec_thread}")
+            # Format a JSON string error message for the LLM
+            error_detail = f"An error occurred while executing the tool '{function_name}': {str(e_tool_exec_thread)}"
+            tool_output_for_llm = json.dumps({"error": error_detail})
+            self.log(f"Client (Thread - {function_name}): Sending error back to LLM: {tool_output_for_llm}")
+
+        # Construct the payload for function_call_output
+        tool_response_payload = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output", 
+                "call_id": call_id,            
+                "output": tool_output_for_llm # This is either the success string or JSON error string
+            }
+        }
+
+        if self.ws_app and self.connected:
+            try:
+                # Send the tool's output
+                self.ws_app.send(json.dumps(tool_response_payload))
+                self.log(f"Client (Thread - {function_name}): Sent tool output for Call_ID='{call_id}'.")
+
+                # Now, trigger the LLM to respond to this tool output
+                # This response.create is crucial for the LLM to generate its next turn based on the tool's output.
+                response_create_payload = {
+                    "type": "response.create",
+                    "response": {
+                        "modalities": ["text", "audio"],
+                        "voice": "ash", # Your preferred voice                        
+                        "output_audio_format": "pcm16"
+                    }
+                }
+                self.ws_app.send(json.dumps(response_create_payload))
+                self.log(f"Client (Thread - {function_name}): Sent 'response.create' to trigger assistant after tool output for Call_ID='{call_id}'.")
+            
+            except Exception as e_send_thread:
+                # Log errors if sending fails (e.g., WebSocket closed abruptly)
+                self.log(f"Client (Thread - {function_name}) ERROR: Could not send tool output or response.create for Call_ID='{call_id}': {e_send_thread}")
+        else:
+            self.log(f"Client (Thread - {function_name}) ERROR: WebSocket not available or not connected. Cannot send tool output for Call_ID='{call_id}'.")
+
+
     def on_message(self, ws, message_str):
         msg = json.loads(message_str)
         msg_type = msg.get("type")
 
-        # Conditional logging as in your working version
+        # ... (your existing conditional logging for RAW_MSG) ...
         if msg_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
             if msg_type in ["response.output.delta", 
                             "response.function_call_arguments.delta", "response.function_call_arguments.done", 
                             "conversation.item.created", "response.output_item.done", "response.done", 
                             "error", "session.created"]:
-                # For very long messages, avoid indenting to keep log concise
                 log_content = json.dumps(msg, indent=2) if len(message_str) < 1000 else str(msg)
                 self.log(f"Client RAW_MSG TYPE: {msg_type} | CONTENT: {log_content}")
 
 
         if msg_type == "response.output.delta":
+            # ... (your existing response.output.delta handling for tool_calls argument accumulation) ...
             item_type = msg.get("item_type")
             delta_content = msg.get("delta") 
             if item_type == "tool_calls":
@@ -94,11 +150,11 @@ class OpenAISpeechClient:
                             fn_name = tc_obj.get('function',{}).get('name')
                             fn_args_partial = tc_obj.get('function',{}).get('arguments',"")
                             if call_id and fn_name:
-                                # self.log(f"Client: LLM INTENDS TOOL: Name='{fn_name}', ID='{call_id}', ArgsPart='{fn_args_partial}'.") # Can be noisy
                                 self.accumulated_tool_args[call_id] = self.accumulated_tool_args.get(call_id, "") + fn_args_partial
             return 
 
         elif msg_type == "response.function_call_arguments.delta":
+            # ... (your existing response.function_call_arguments.delta handling) ...
             call_id = msg.get("call_id")
             delta_args = msg.get("delta", "") 
             self.accumulated_tool_args[call_id] = self.accumulated_tool_args.get(call_id, "") + delta_args
@@ -111,130 +167,110 @@ class OpenAISpeechClient:
             final_args_str_from_event = msg.get("arguments", "{}")
             final_accumulated_args = self.accumulated_tool_args.pop(call_id, "{}") 
 
-            final_args_to_use = final_args_str_from_event # Default to event's args
-            # Use accumulated if event's is empty/placeholder AND accumulated has content
+            final_args_to_use = final_args_str_from_event
             if (not final_args_str_from_event or final_args_str_from_event == "{}") and \
                (final_accumulated_args and final_accumulated_args != "{}"):
                 self.log(f"Client: Using accumulated args for Call_ID {call_id}.")
                 final_args_to_use = final_accumulated_args
             
-            if function_to_execute_name:
-                self.log(f"Client: Function Call Finalized by LLM: Name='{function_to_execute_name}', Call_ID='{call_id}', Args='{final_args_to_use}'")
-                parsed_args = {}
-                try:
-                    if final_args_to_use: 
-                        parsed_args = json.loads(final_args_to_use) 
-                except json.JSONDecodeError as e:
-                    self.log(f"Client WARN: Could not decode JSON arguments for {function_to_execute_name}: '{final_args_to_use}'. Error: {e}")
-                    # Send error back to LLM if args are invalid
-                    error_tool_result_str = f"Invalid JSON arguments provided for tool {function_to_execute_name}. Error: {str(e)}"
-                    error_result_payload = {
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output", 
-                            "call_id": call_id,
-                            # Output for LLM should preferably be a string. If error_tool_result_str is too complex, simplify.
-                            "output": json.dumps({"error": error_tool_result_str }) 
-                        }
-                    }
-                    try:
-                        ws.send(json.dumps(error_result_payload))
-                        self.log(f"Client: Sent arg parsing error as 'conversation.item.create' for Call_ID='{call_id}'.")
-                        # Trigger LLM to respond to this error
-                        response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": "ash", "output_audio_format": "pcm16"}}
-                        ws.send(json.dumps(response_create_payload))
-                        self.log("Client: Sent 'response.create' to trigger assistant response after arg error.")
-                    except Exception as e_send_err:
-                        self.log(f"Client ERROR: Could not send arg parsing error back to LLM: {e_send_err}")
-                    return # Stop processing this tool call
-
-                if function_to_execute_name == END_CONVERSATION_TOOL_NAME:
-                    reason = parsed_args.get("reason", "No reason specified by LLM.")
-                    self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' with reason: '{reason}'. Transitioning state.")
-                    if self.wake_word_active: 
-                        self.player.clear(); self.player.flush() 
-                        self.set_app_state("LISTENING_FOR_WAKEWORD") 
-                        time.sleep(0.1) 
-                        print(f"\n*** Assistant is now passively listening (Reason: {reason}). Say '{self.wake_word_detector_instance.wake_word_model_name}' to activate. ***\n")
-                    else: 
-                        print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query (WW inactive). ***\n")
-                
-                elif function_to_execute_name in TOOL_HANDLERS:
-                    handler_function = TOOL_HANDLERS[function_to_execute_name]
-                    self.log(f"Client: Calling tool executor for '{function_to_execute_name}'...")
-                    try:
-                        tool_result_str = handler_function(**parsed_args, config=self.config) 
-                        self.log(f"Client: Tool '{function_to_execute_name}' executed locally. Result snippet: '{str(tool_result_str)[:200]}...'")
-                        
-                        # YOUR WORKING METHOD FOR SENDING TOOL RESULTS:
-                        tool_response_payload = {
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output", 
-                                "call_id": call_id,            
-                                "output": str(tool_result_str) # Ensure it's a string      
-                            }
-                        }
-                        ws.send(json.dumps(tool_response_payload))
-                        self.log(f"Client: Sent tool result as 'conversation.item.create' (item type: function_call_output) for Call_ID='{call_id}'.")
-                        
-                        # Send response.create to trigger assistant to generate a response
-                        response_create_payload = {
-                            "type": "response.create",
-                            "response": {
-                                "modalities": ["text", "audio"],
-                                "voice": "ash", # Your preferred voice
-                                "output_audio_format": "pcm16"
-                            }
-                        }
-                        ws.send(json.dumps(response_create_payload))
-                        self.log("Client: Sent 'response.create' to trigger assistant response after tool success.")
-
-                    except Exception as e_tool_exec:
-                        self.log(f"Client ERROR: Exception during execution of tool '{function_to_execute_name}': {e_tool_exec}")
-                        error_tool_result_str = f"An error occurred while executing the tool '{function_to_execute_name}': {str(e_tool_exec)}"
-                        # YOUR WORKING METHOD FOR SENDING TOOL ERRORS:
-                        error_result_payload = {
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output", 
-                                "call_id": call_id,
-                                # OpenAI expects the 'output' to be a string representation of the tool's result.
-                                # If sending structured error info, ensure it's a string (e.g., JSON string).
-                                "output": json.dumps({"error": error_tool_result_str}) 
-                            }
-                        }
-                        try:
-                            ws.send(json.dumps(error_result_payload))
-                            self.log(f"Client: Sent tool execution error as 'conversation.item.create' (item type: function_call_output) for Call_ID='{call_id}'.")
-                            
-                            response_create_payload = {
-                                "type": "response.create",
-                                "response": {
-                                    "modalities": ["text", "audio"],
-                                    "voice": "ash",
-                                    "output_audio_format": "pcm16"
-                                }
-                            }
-                            ws.send(json.dumps(response_create_payload))
-                            self.log("Client: Sent 'response.create' to trigger assistant response after tool error.")
-                        except Exception as e_send_err:
-                            self.log(f"Client ERROR: Could not send tool error back to LLM: {e_send_err}")
-                else:
-                    self.log(f"Client WARN: No handler defined in TOOL_HANDLERS for function '{function_to_execute_name}'.")
-            else: 
+            if not function_to_execute_name:
                 self.log(f"Client WARN: 'function_call_arguments.done' for Call_ID='{call_id}' did not include function name. Args='{final_args_to_use}'.")
+                # Potentially send an error back to LLM if this is critical
+                return
+
+            self.log(f"Client: Function Call Finalized by LLM: Name='{function_to_execute_name}', Call_ID='{call_id}', Args='{final_args_to_use}'")
+            parsed_args = {}
+            try:
+                if final_args_to_use: 
+                    parsed_args = json.loads(final_args_to_use) 
+            except json.JSONDecodeError as e:
+                self.log(f"Client WARN: Could not decode JSON arguments for {function_to_execute_name}: '{final_args_to_use}'. Error: {e}")
+                # Prepare error message for LLM to be sent by the thread
+                error_detail_for_llm = f"Invalid JSON arguments provided for tool {function_to_execute_name}. Error: {str(e)}"
+                error_output_for_llm = json.dumps({"error": error_detail_for_llm })
+                
+                # Send this error back via the threaded mechanism as well for consistency
+                # Although, this specific error (arg parsing) happens before tool handler is even called.
+                # We can send it directly here, or let the thread mechanism handle a "pre-tool error".
+                # For now, let's send it directly and then trigger response.create, then return.
+                # This is an error *before* the tool handler itself is invoked.
+                error_result_payload = {
+                    "type": "conversation.item.create",
+                    "item": {"type": "function_call_output", "call_id": call_id, "output": error_output_for_llm }
+                }
+                try:
+                    ws.send(json.dumps(error_result_payload))
+                    self.log(f"Client: Sent arg parsing error as 'conversation.item.create' for Call_ID='{call_id}'.")
+                    response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": "ash", "output_audio_format": "pcm16"}}
+                    ws.send(json.dumps(response_create_payload))
+                    self.log("Client: Sent 'response.create' to trigger assistant response after arg parsing error.")
+                except Exception as e_send_err:
+                    self.log(f"Client ERROR: Could not send arg parsing error back to LLM: {e_send_err}")
+                return # Stop processing this tool call
+
+            # --- ALL TOOL CALLS ARE NOW THREADED ---
+            if function_to_execute_name == END_CONVERSATION_TOOL_NAME:
+                # This tool is special: it directly changes client state and might not need a response.create from the thread.
+                # It's also very quick. Let's handle it synchronously for simplicity, as it affects client state directly.
+                reason = parsed_args.get("reason", "No reason specified by LLM.")
+                self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' (synchronously) with reason: '{reason}'. Transitioning state.")
+                if self.wake_word_active: 
+                    self.player.clear(); self.player.flush() 
+                    self.set_app_state("LISTENING_FOR_WAKEWORD") 
+                    time.sleep(0.1) 
+                    # No ws.send from here, the state change is the action.
+                    # The LLM implicitly knows the conversation ended.
+                    print(f"\n*** Assistant is now passively listening (Reason: {reason}). Say '{self.wake_word_detector_instance.wake_word_model_name}' to activate. ***\n")
+                else: 
+                    print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query (WW inactive). ***\n")
+                # No explicit `function_call_output` or `response.create` needed for this tool from the client side
+                # as its purpose is to terminate the LLM's active response turn.
+                return # Handled.
+
+            elif function_to_execute_name in TOOL_HANDLERS:
+                handler_function = TOOL_HANDLERS[function_to_execute_name]
+                self.log(f"Client: Dispatching tool '{function_to_execute_name}' to execute in a new thread. Call_ID='{call_id}'.")
+                
+                tool_execution_thread = threading.Thread(
+                    target=self._execute_tool_in_thread,
+                    args=(handler_function, parsed_args, call_id, self.config, function_to_execute_name),
+                    daemon=True # Daemon threads will exit when the main program exits
+                )
+                tool_execution_thread.start()
+                # The on_message handler returns here. The thread will send the tool output and response.create.
+                # The LLM might have already given an interim verbal feedback before this point if instructed.
+                self.log(f"Client: Thread started for '{function_to_execute_name}'. Main handler continuing.")
+                return # IMPORTANT: Return here to not fall through to unhandled tool logic
+
+            else:
+                self.log(f"Client WARN: No handler defined in TOOL_HANDLERS for function '{function_to_execute_name}'. Call_ID='{call_id}'.")
+                # Send an error back to LLM indicating tool is not implemented.
+                # This error should also go through the threaded mechanism ideally, or be handled consistently.
+                # For now, treating as an immediate error:
+                unhandled_tool_error = json.dumps({"error": f"Tool '{function_to_execute_name}' is not implemented or recognized by the client."})
+                error_payload = {
+                    "type": "conversation.item.create",
+                    "item": {"type": "function_call_output", "call_id": call_id, "output": unhandled_tool_error}
+                }
+                try:
+                    ws.send(json.dumps(error_payload))
+                    self.log(f"Client: Sent 'unhandled tool' error for Call_ID='{call_id}'.")
+                    response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": "ash"}}
+                    ws.send(json.dumps(response_create_payload))
+                    self.log("Client: Sent 'response.create' after unhandled tool error.")
+                except Exception as e_send_unhandled:
+                    self.log(f"Client ERROR: Could not send unhandled tool error: {e_send_unhandled}")
+                return
         
+        # ... (rest of your on_message handlers for session.created, audio.delta, audio.done, speech_started, speech_stopped, error)
         elif msg_type == "session.created":
             self.session_id = msg.get('session', {}).get('id')
             self.log(f"Client: OpenAI Session created: {self.session_id}")
-            # Guidance message for user:
             if self.get_app_state() == "LISTENING_FOR_WAKEWORD" and self.wake_word_active:
                  print(f"\n*** CLIENT: Listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' ***\n")
             else:
                  print(f"\n*** CLIENT: Speak now to interact with OpenAI (WW inactive or sending mode). ***\n")
 
-        
         elif msg_type == "response.audio.delta":
             audio_data_b64 = msg.get("delta")
             if audio_data_b64:
@@ -249,9 +285,6 @@ class OpenAISpeechClient:
                 self.log("Client: Audio done, state is LISTENING_FOR_WAKEWORD.")
             elif current_st_after_audio == "SENDING_TO_OPENAI": 
                 self.log(f"Client: Audio done. Current state is SENDING_TO_OPENAI.")
-                # This prompt is a general "assistant finished speaking" indicator.
-                # If it was a pre-tool announcement, the LLM will soon make the tool call.
-                # If it was the final answer, user can speak next.
                 print(f"\n*** Assistant has finished speaking. Ready for your next query. (Ctrl+C to exit) ***\n")
         
         elif msg_type == "input_audio_buffer.speech_started":
@@ -272,17 +305,20 @@ class OpenAISpeechClient:
 
 
     def on_error(self, ws, error): 
+        # ... (on_error logic remains the same) ...
         self._log_section("WebSocket ERROR") 
         self.log(f"Client: WebSocket error: {error}")
         self.connected = False
 
     def on_close(self, ws, close_status_code, close_msg): 
+        # ... (on_close logic remains the same) ...
         self._log_section("WebSocket CLOSE") 
         self.log(f"Client: WebSocket closed: Code={close_status_code}, Reason='{close_msg}'")
         self.connected = False
         self.accumulated_tool_args.clear()
 
     def run_client(self): 
+        # ... (run_client logic remains the same) ...
         self.log(f"Client: Attempting WebSocket connection to: {self.ws_url}")
         try:
             import websocket 
@@ -301,6 +337,7 @@ class OpenAISpeechClient:
         self.ws_app.run_forever()
 
     def close_connection(self): 
+        # ... (close_connection logic remains the same) ...
         self.log("Client: close_connection() called.")
         if self.ws_app:
             self.log("Client: Closing WebSocket connection from client side.")
