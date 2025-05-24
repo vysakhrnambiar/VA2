@@ -257,8 +257,8 @@ class OpenAISpeechClient:
                 self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' (synchronously) for reason: '{reason}'.")
                 if self.wake_word_active: 
                     self.set_app_state("LISTENING_FOR_WAKEWORD")
-                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) may finish playing audio for next 1.5 mins***\n") 
-                    time.sleep(2.5) 
+                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) may finish playing audio for next 2 seconds***\n") 
+                    time.sleep(2.0) 
                     self.player.clear(); self.player.flush()
                     print(f"\n*** Player Clear and flushed") 
                     time.sleep(0.2) 
