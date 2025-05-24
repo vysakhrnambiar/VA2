@@ -256,9 +256,12 @@ class OpenAISpeechClient:
                 reason = parsed_args.get("reason", "No reason specified by LLM.")
                 self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' (synchronously) for reason: '{reason}'.")
                 if self.wake_word_active: 
-                    self.player.clear(); self.player.flush() 
-                    self.set_app_state("LISTENING_FOR_WAKEWORD") 
-                    time.sleep(0.1) 
+                    self.set_app_state("LISTENING_FOR_WAKEWORD")
+                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) may finish playing audio for next 1.5 mins***\n") 
+                    time.sleep(2.5) 
+                    self.player.clear(); self.player.flush()
+                    print(f"\n*** Player Clear and flushed") 
+                    time.sleep(0.2) 
                     print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) ***\n")
                 else: 
                     print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query. ***\n")
