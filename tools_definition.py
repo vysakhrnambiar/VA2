@@ -7,6 +7,8 @@ RAISE_TICKET_TOOL_NAME = "raise_ticket_for_missing_knowledge"
 GET_BOLT_KB_TOOL_NAME = "get_bolt_knowledge_base_info"
 GET_DTC_KB_TOOL_NAME = "get_dtc_knowledge_base_info"
 DISPLAY_ON_INTERFACE_TOOL_NAME = "display_on_interface" # New tool name
+GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME = "get_taxi_ideas_for_today"
+GENERAL_GOOGLE_SEARCH_TOOL_NAME = "general_google_search"
 
 # --- Tool Definitions ---
 
@@ -178,6 +180,55 @@ TOOL_DISPLAY_ON_INTERFACE = {
     }
 }
 
+# --- New Tool Definitions ---
+TOOL_GET_TAXI_IDEAS = {
+    "type": "function",
+    "name": GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME,
+    "description": (
+        "Fetches actionable ideas, relevant news, and event information for taxi services in Dubai for the current day. "
+        "Use this when specifically asked for daily taxi deployment suggestions, event-based opportunities, local news relevant to transport, "
+        "or operational ideas for today. The tool requires the current date."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "current_date": {
+                "type": "string",
+                "description": "The current date in 'Month DD, YYYY' format (e.g., 'May 24, 2025'). This is mandatory to get relevant information for today."
+            },
+            "specific_focus": {
+                "type": "string",
+                "description": "Optional: A specific focus for the ideas, like 'airport demand', 'major sporting events', or 'shopping mall traffic'."
+            }
+        },
+        "required": ["current_date"]
+    }
+}
+
+TOOL_GENERAL_GOOGLE_SEARCH = {
+    "type": "function",
+    "name": GENERAL_GOOGLE_SEARCH_TOOL_NAME,
+    "description": (
+        "Searches the internet using Google for information on general topics, current events, business news, "
+        "competitor information, or other subjects not covered by internal knowledge bases. "
+        "Primarily for queries related to Dubai, professional contexts, or general knowledge. "
+        "Use for questions like 'What is the weather in Dubai today?', 'Latest news on autonomous taxis in UAE', "
+        "or 'Who is the CEO of Company X?'"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "search_query": {
+                "type": "string",
+                "description": "The specific and concise query to search on Google. Example: 'current fuel prices in Dubai', 'traffic conditions Sheikh Zayed Road now'."
+            }
+        },
+        "required": ["search_query"]
+    }
+}
+
+
+# List of all tools to be passed to OpenAI
 
 # List of all tools to be passed to OpenAI
 ALL_TOOLS = [
@@ -186,5 +237,8 @@ ALL_TOOLS = [
     TOOL_RAISE_TICKET,
     TOOL_GET_BOLT_KB,
     TOOL_GET_DTC_KB,
-    TOOL_DISPLAY_ON_INTERFACE # Add the new tool here
+    TOOL_DISPLAY_ON_INTERFACE, # Add the new tool here
+    TOOL_GET_TAXI_IDEAS, # Add new tool
+    TOOL_GENERAL_GOOGLE_SEARCH # Add new tool
 ]
+

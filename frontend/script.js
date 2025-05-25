@@ -1,10 +1,13 @@
 // frontend/script.js
-
 document.addEventListener('DOMContentLoaded', () => {
     const wsStatusElement = document.getElementById('ws-status');
     const displayArea = document.getElementById('display-area');
     let websocket = null;
-    let chartInstance = null; // To keep track of an existing chart
+    let chartInstance = null;
+    let contentTimeoutId = null;
+    let logoIdleAnimationId = null;
+
+    const IDLE_STATE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
     function updateWsStatus(statusText, cssClass) {
         if (wsStatusElement) {
@@ -14,186 +17,277 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function clearDisplayArea() {
-        if (displayArea) {
-            displayArea.innerHTML = ''; // Clear previous content
-        }
+    function clearAllDynamicContent(withAnimation = false) {
         if (chartInstance) {
-            chartInstance.destroy(); // Destroy previous chart instance
+            chartInstance.destroy();
             chartInstance = null;
         }
-    }
-
-    function addElementToDisplay(element) {
-        if (displayArea) {
-            const placeholder = displayArea.querySelector('.placeholder');
-            if (placeholder) {
-                placeholder.remove();
-            }
-            displayArea.appendChild(element);
-            element.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        if (logoIdleAnimationId) {
+            cancelAnimationFrame(logoIdleAnimationId);
+            logoIdleAnimationId = null;
+        }
+        
+        if (withAnimation && displayArea.children.length > 0) {
+            // Add fade-out animation to existing content
+            Array.from(displayArea.children).forEach(child => {
+                child.classList.add('animate-fade-out');
+            });
+            
+            // Wait for animation to complete before clearing
+            setTimeout(() => {
+                displayArea.innerHTML = ''; // Clear everything inside display-area
+            }, 1000); // Match the animation duration (1s)
+        } else {
+            displayArea.innerHTML = ''; // Clear everything immediately
         }
     }
     
-   
-    function renderMarkdown(payload) {
-        clearDisplayArea();
-        const markdownContainer = document.createElement('div');
-        markdownContainer.classList.add('markdown-content');
-        
-        let htmlOutput = "";
-        let mainTitleTextFromPayload = "";
-
-        // 1. Process and render the main title from payload.title
-        if (payload.title && payload.title.trim() !== "") {
-            mainTitleTextFromPayload = payload.title.trim();
-            let titleHtml;
-            // If payload.title itself is markdown (e.g., "## My Title"), parse it.
-            // Otherwise, wrap plain text in <h2>.
-            if (mainTitleTextFromPayload.startsWith("#")) {
-                titleHtml = marked.parse(mainTitleTextFromPayload);
-            } else {
-                titleHtml = marked.parse(`<h2>${mainTitleTextFromPayload}</h2>`);
-            }
-            htmlOutput += titleHtml;
+    function resetContentTimeout() {
+        if (contentTimeoutId) {
+            clearTimeout(contentTimeoutId);
         }
-
-        // 2. Process and render payload.content, attempting to avoid title duplication
-        if (payload.content && payload.content.trim() !== "") {
-            let contentToParse = payload.content.trim();
-
-            // Heuristic to prevent title duplication:
-            // If a mainTitleTextFromPayload was rendered, and contentToParse starts with
-            // the same text (ignoring markdown heading characters and case for comparison),
-            // then remove that first line from contentToParse.
-            if (mainTitleTextFromPayload !== "") {
-                const firstLineOfContent = contentToParse.split('\n')[0].trim();
-                // Normalize both titles for comparison (remove #, trim, lowercase)
-                const normalizedMainTitle = mainTitleTextFromPayload.replace(/^#+\s*/, '').toLowerCase();
-                const normalizedFirstLineContent = firstLineOfContent.replace(/^#+\s*/, '').toLowerCase();
-
-                if (normalizedFirstLineContent === normalizedMainTitle) {
-                    // The first line of content is a duplicate of the main title. Skip it.
-                    const lines = contentToParse.split('\n');
-                    lines.shift(); // Remove the first line
-                    // Remove any subsequent empty lines that might have been after the heading
-                    while (lines.length > 0 && lines[0].trim() === "") {
-                        lines.shift();
-                    }
-                    contentToParse = lines.join('\n');
-                    if (contentToParse.trim() !== "") { // Check if there's remaining content
-                         htmlOutput += marked.parse(contentToParse);
-                    }
-                    console.log("renderMarkdown: Heuristically removed duplicate title from content body.");
-                } else {
-                    // First line is different, parse all content
-                    htmlOutput += marked.parse(contentToParse);
-                }
-            } else {
-                // No mainTitleTextFromPayload, so parse all content as is
-                htmlOutput += marked.parse(contentToParse);
-            }
-        } else {
-            // Only show "no content" if there was also no title from payload.title
-            if (htmlOutput === "") { 
-                htmlOutput += marked.parse("_No specific content provided for markdown display._");
-            }
+        // Only set timeout if not already in idle state (which showIdleState will be)
+        if (displayArea.querySelector('#active-content-wrapper')) {
+             contentTimeoutId = setTimeout(showIdleState, IDLE_STATE_TIMEOUT_MS);
         }
-        
-        markdownContainer.innerHTML = htmlOutput;
-        addElementToDisplay(markdownContainer);
     }
 
-
-    function renderGraph(type, payload) {
-        clearDisplayArea();
-        const graphContainer = document.createElement('div');
-        graphContainer.classList.add('graph-content');
+    function showIdleState() {
+        console.log("Transitioning to idle state");
+        clearAllDynamicContent(true); // Clear previous content with animation
         
-        if (payload.title) {
+        // Create a timeout to add the idle content after the fade-out animation completes
+        setTimeout(() => {
+            const idleContent = document.createElement('div');
+            idleContent.id = 'idle-state-content';
+            idleContent.classList.add('animate-fade-in');
+
+            const logoImg = document.createElement('img');
+            logoImg.id = 'animated-logo-idle';
+            logoImg.src = '/static/logo.png';
+            logoImg.alt = 'Voice Assistant Logo';
+            logoImg.classList.add('animate-float', 'animate-pulse');
+            idleContent.appendChild(logoImg);
+
             const titleElement = document.createElement('h2');
-            titleElement.classList.add('chart-title');
-            titleElement.textContent = payload.title;
-            graphContainer.appendChild(titleElement);
-        }
+            titleElement.textContent = 'Ready to assist';
+            titleElement.classList.add('animate-fade-in');
+            idleContent.appendChild(titleElement);
 
-        const canvas = document.createElement('canvas');
-        // It's good to give canvas an ID for potential future reference, though not strictly needed here
-        // canvas.id = `chart-${Date.now()}`; 
-        graphContainer.appendChild(canvas);
-        addElementToDisplay(graphContainer);
+            // Create subtitle element with ID for updating based on connection status
+            const subtitleElement = document.createElement('p');
+            subtitleElement.id = 'status-message';
+            subtitleElement.classList.add('animate-fade-in');
+            
+            // Set initial message based on current WebSocket status
+            updateStatusMessage(subtitleElement);
+            
+            idleContent.appendChild(subtitleElement);
+            
+            displayArea.appendChild(idleContent);
 
-        const ctx = canvas.getContext('2d');
-        
-        // Map LLM's "values" to Chart.js's "data"
-        const datasets = payload.datasets.map(ds => ({
-            label: ds.label,
-            data: ds.values, // Chart.js uses 'data' for the numerical values
-            // We can add default styling or derive from payload.options later
-            // backgroundColor: 'rgba(75, 192, 192, 0.2)', 
-            // borderColor: 'rgba(75, 192, 192, 1)',
-            // borderWidth: 1
-        }));
+            // Combined floating and pulsing animation for the logo
+            let scale = 1;
+            let scaleDirection = 0.002; // Increased speed for more noticeable effect
+            const minScale = 0.95;
+            const maxScale = 1.05;
 
-        let chartType;
-        switch(type) {
-            case 'graph_bar': chartType = 'bar'; break;
-            case 'graph_line': chartType = 'line'; break;
-            case 'graph_pie': chartType = 'pie'; break;
-            default:
-                console.error("Unknown graph type for Chart.js:", type);
-                renderMarkdown({ title: "Error", content: `Cannot render unknown graph type: ${type}` });
-                return;
-        }
-        
-        const chartData = {
-            labels: payload.labels,
-            datasets: datasets
-        };
-
-        const chartOptions = {
-            responsive: true,
-            maintainAspectRatio: true, // Or false if you want to control aspect ratio via CSS/container
-            animation: payload.options?.animated !== undefined ? payload.options.animated : true, // Default to animated
-            scales: {},
-            plugins: {
-                title: {
-                    display: false, // We are using a separate H2 for title
-                    // text: payload.title // Alternatively, use Chart.js internal title
-                },
-                legend: {
-                    position: 'top', // Or 'bottom', 'left', 'right'
-                    display: type !== 'graph_pie' // Often legend is more useful for bar/line
+            function animateLogo() {
+                scale += scaleDirection;
+                if (scale > maxScale || scale < minScale) {
+                    scaleDirection *= -1; // Reverse direction
+                    scale = Math.max(minScale, Math.min(maxScale, scale)); // Clamp within bounds
+                }
+                
+                const currentLogo = document.getElementById('animated-logo-idle');
+                if (currentLogo) { // Check if logo element is still on page
+                    // Apply scaling in addition to CSS animations
+                    currentLogo.style.transform = `scale(${scale})`;
+                    logoIdleAnimationId = requestAnimationFrame(animateLogo);
+                } else {
+                    if (logoIdleAnimationId) cancelAnimationFrame(logoIdleAnimationId);
+                    logoIdleAnimationId = null;
                 }
             }
-        };
-
-        // Add axis labels if provided in options (for bar and line charts)
-        if (type === 'graph_bar' || type === 'graph_line') {
-            if (payload.options?.x_axis_label) {
-                chartOptions.scales.x = { 
-                    title: { display: true, text: payload.options.x_axis_label }
-                };
-            }
-            if (payload.options?.y_axis_label) {
-                chartOptions.scales.y = { 
-                    title: { display: true, text: payload.options.y_axis_label },
-                    beginAtZero: true // Common for y-axes
-                };
-            }
+            
+            // Start the animation
+            animateLogo();
+            
+            if (contentTimeoutId) clearTimeout(contentTimeoutId); // No timeout when in idle
+        }, 1000); // Match the fade-out animation duration
+    }
+    
+    // Function to update the status message based on WebSocket connection
+    function updateStatusMessage(element) {
+        if (!element) {
+            element = document.getElementById('status-message');
+            if (!element) return; // Element not found
         }
-
-
-        if (chartInstance) {
-            chartInstance.destroy();
+        
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            element.textContent = 'Waiting for your command. Speak or type your request.';
+            element.classList.remove('disconnected-message');
+        } else {
+            element.textContent = 'Disconnected. Attempting to reconnect...';
+            element.classList.add('disconnected-message');
         }
-        chartInstance = new Chart(ctx, {
-            type: chartType,
-            data: chartData,
-            options: chartOptions
+    }
+    
+    function displayActiveContent(elementProvider) {
+        // Use animation when clearing content
+        clearAllDynamicContent(true);
+
+        // Create a timeout to add the new content after the fade-out animation completes
+        setTimeout(() => {
+            const activeContentWrapper = document.createElement('div');
+            activeContentWrapper.id = 'active-content-wrapper';
+            activeContentWrapper.classList.add('animate-fade-in');
+            
+            const contentElement = elementProvider(); // Get the markdown div or graph container
+            activeContentWrapper.appendChild(contentElement);
+            displayArea.appendChild(activeContentWrapper);
+            
+            resetContentTimeout(); // Start the 5-minute timer for this active content
+        }, 1000); // Match the fade-out animation duration
+    }
+
+    function renderMarkdown(payload) {
+        displayActiveContent(() => {
+            const markdownContainer = document.createElement('div');
+            markdownContainer.classList.add('markdown-content');
+            
+            let htmlOutput = "";
+            let mainTitleTextFromPayload = "";
+
+            if (payload.title && payload.title.trim() !== "") {
+                mainTitleTextFromPayload = payload.title.trim();
+                htmlOutput += marked.parse(mainTitleTextFromPayload.startsWith("#") ? mainTitleTextFromPayload : `<h2>${mainTitleTextFromPayload}</h2>`);
+            }
+
+            if (payload.content && payload.content.trim() !== "") {
+                let contentToParse = payload.content.trim();
+                if (mainTitleTextFromPayload !== "") {
+                    const firstLineOfContent = contentToParse.split('\n')[0].trim();
+                    const normalizedMainTitle = mainTitleTextFromPayload.replace(/^#+\s*/, '').toLowerCase();
+                    const normalizedFirstLineContent = firstLineOfContent.replace(/^#+\s*/, '').toLowerCase();
+                    if (normalizedFirstLineContent === normalizedMainTitle) {
+                        const lines = contentToParse.split('\n'); lines.shift();
+                        while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+                        contentToParse = lines.join('\n');
+                    }
+                }
+                if (contentToParse.trim() !== "") htmlOutput += marked.parse(contentToParse);
+            } else if (htmlOutput === "") {
+                htmlOutput += marked.parse("<em>No specific content provided for markdown display.</em>");
+            }
+            
+            markdownContainer.innerHTML = htmlOutput;
+            return markdownContainer;
         });
     }
 
+    function renderGraph(type, payload) {
+        displayActiveContent(() => {
+            const graphOuterContainer = document.createElement('div');
+            graphOuterContainer.classList.add('graph-content');
+
+            if (payload.title) {
+                const titleElement = document.createElement('h2');
+                titleElement.classList.add('chart-title');
+                titleElement.textContent = payload.title;
+                graphOuterContainer.appendChild(titleElement);
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.style.height = 'clamp(300px, 50vh, 450px)'; // Responsive height with min/max
+            canvas.style.width = '100%';
+            graphOuterContainer.appendChild(canvas);
+
+            const ctx = canvas.getContext('2d');
+            
+            const datasets = payload.datasets.map(ds => ({
+                label: ds.label,
+                data: ds.values,
+                backgroundColor: type === 'graph_pie' ? ['#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#dbeafe', '#eff6ff'].slice(0, ds.values.length) : 'rgba(59, 130, 246, 0.3)', // Tailwind blue-500 family
+                borderColor: type === 'graph_pie' ? '#100f24' : 'rgba(59, 130, 246, 1)',
+                borderWidth: type === 'graph_pie' ? 2 : 1.5,
+                tension: type === 'graph_line' ? 0.3 : undefined,
+                pointBackgroundColor: type === 'graph_line' ? 'rgba(59, 130, 246, 1)' : undefined,
+                pointBorderColor: type === 'graph_line' ? '#fff' : undefined,
+                pointHoverBackgroundColor: type === 'graph_line' ? '#fff' : undefined,
+                pointHoverBorderColor: type === 'graph_line' ? 'rgba(59, 130, 246, 1)' : undefined,
+            }));
+
+            let chartTypeJS;
+            switch(type) {
+                case 'graph_bar': chartTypeJS = 'bar'; break;
+                case 'graph_line': chartTypeJS = 'line'; break;
+                case 'graph_pie': chartTypeJS = 'pie'; break;
+                default:
+                    console.error("Unknown graph type for Chart.js:", type);
+                    const errorDiv = document.createElement('div');
+                    errorDiv.classList.add('markdown-content');
+                    errorDiv.innerHTML = marked.parse(`<h2>Error</h2><p>Cannot render unknown graph type: ${type}</p>`);
+                    return errorDiv;
+            }
+            
+            const chartData = { labels: payload.labels, datasets: datasets };
+
+            Chart.defaults.color = '#9ca3af'; // Tailwind gray-400
+            Chart.defaults.borderColor = '#374151'; // Tailwind gray-700
+            Chart.defaults.font.family = "'Space Grotesk', 'Noto Sans', sans-serif";
+
+
+            const chartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: payload.options?.animated !== undefined ? payload.options.animated : { duration: 800, easing: 'easeInOutQuart' },
+                scales: {},
+                plugins: {
+                    title: { display: false }, // Using custom H2 for title
+                    legend: {
+                        position: 'bottom',
+                        display: (payload.datasets.length > 1 && type !== 'graph_pie') || (type === 'graph_pie' && payload.labels.length > 1),
+                        labels: { color: '#d1d5db', padding: 15, font: {size: 13} }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(31, 29, 61, 0.9)', // Darker tooltip
+                        titleColor: '#f0f0ff', 
+                        bodyColor: '#d0d0f0',
+                        padding: 12, cornerRadius: 3,
+                        titleFont: { weight: 'bold', size: 14 },
+                        bodyFont: { size: 13 },
+                        boxPadding: 5
+                    }
+                }
+            };
+
+            if (type === 'graph_bar' || type === 'graph_line') {
+                chartOptions.scales.x = { 
+                    title: { display: !!payload.options?.x_axis_label, text: payload.options?.x_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} },
+                    grid: { color: '#21204b', drawBorder: false },
+                    ticks: { color: '#9ca3af', font:{size:12} }
+                };
+                chartOptions.scales.y = { 
+                    title: { display: !!payload.options?.y_axis_label, text: payload.options?.y_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} },
+                    beginAtZero: true,
+                    grid: { color: '#21204b', drawBorder: false },
+                    ticks: { color: '#9ca3af', font:{size:12}, 
+                             callback: function(value) { // Optional: format large numbers
+                                if (value >= 1000000) return (value / 1000000) + 'M';
+                                if (value >= 1000) return (value / 1000) + 'K';
+                                return value;
+                             }
+                           }
+                };
+            }
+
+            if (chartInstance) chartInstance.destroy(); // Defensive, should be cleared by clearAllDynamicContent
+            chartInstance = new Chart(ctx, { type: chartTypeJS, data: chartData, options: chartOptions });
+            
+            return graphOuterContainer;
+        });
+    }
 
     function connectWebSocket() {
         const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -205,15 +299,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         websocket = new WebSocket(wsUrl);
+        updateWsStatus('Connecting...', 'status-error');
 
-        websocket.onopen = function(event) {
+        websocket.onopen = () => {
             updateWsStatus('Connected', 'status-connected');
             console.log("WebSocket connection established");
-            // Optional: Display a system message in the main area
-            // addMessageToDisplay("<p class='system-message'><em>Connected to WebSocket server. Waiting for assistant...</em></p>");
+            updateStatusMessage(); // Update status message when connected
         };
 
-        websocket.onmessage = function(event) {
+        websocket.onmessage = (event) => {
             console.log("Message from server: ", event.data);
             try {
                 const messageData = JSON.parse(event.data);
@@ -222,7 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (!type || !payload) {
                     console.error("Invalid message structure received:", messageData);
-                    renderMarkdown({title: "Error", content: "Received malformed data from server."});
+                    renderMarkdown({title: "Data Error", content: "Received malformed data from server."});
                     return;
                 }
 
@@ -232,51 +326,53 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderGraph(type, payload);
                 } else {
                     console.warn("Received unknown display type:", type);
-                    // Fallback to raw display for unknown types
-                    clearDisplayArea();
-                    let contentHtml = `<div class="message-header">Unknown Type: <strong>${type}</strong></div>`;
-                    contentHtml += `<pre class="raw-json">${JSON.stringify(payload, null, 2)}</pre>`;
-                    
-                    const unknownItem = document.createElement('div');
-                    unknownItem.classList.add('display-item', 'unknown-type');
-                    unknownItem.innerHTML = contentHtml;
-                    addElementToDisplay(unknownItem);
+                    displayActiveContent(() => {
+                        const unknownContainer = document.createElement('div');
+                        unknownContainer.classList.add('markdown-content');
+                        unknownContainer.innerHTML = `<h2>Unknown Display Type: <strong>${type}</strong></h2>
+                                                     <pre style="background-color: #1f2937; color: #e5e7eb; padding: 10px; border-radius: 4px;">${JSON.stringify(payload, null, 2)}</pre>`;
+                        return unknownContainer;
+                    });
                 }
-
             } catch (e) {
                 console.error("Failed to parse message or render:", e);
-                clearDisplayArea();
-                const errorItem = document.createElement('div');
-                errorItem.classList.add('display-item', 'error-message');
-                errorItem.innerHTML = `<p><em>Error processing message from server.</em></p><pre>${event.data}</pre>`;
-                addElementToDisplay(errorItem);
+                displayActiveContent(() => {
+                    const errorContainer = document.createElement('div');
+                    errorContainer.classList.add('markdown-content');
+                    errorContainer.innerHTML = `<h2>Display Error</h2>
+                                                <p><em>An error occurred while trying to display the content.</em></p>
+                                                <pre style="background-color: #1f2937; color: #e5e7eb; padding: 10px; border-radius: 4px;">Data: ${event.data}</pre>`;
+                    return errorContainer;
+                });
             }
         };
 
-        websocket.onclose = function(event) {
+        websocket.onclose = (event) => {
             updateWsStatus('Disconnected', 'status-disconnected');
             console.log("WebSocket connection closed", event);
-            let reason = "";
-            if (event.code) reason += `Code: ${event.code}`;
-            if (event.reason) reason += ` Reason: ${event.reason}`;
-            if (reason === "") reason = "No specific reason given by server.";
-            
-            // Optional: Display disconnect message in main area
-            // addMessageToDisplay(`<p class="system-message error-message"><em>Disconnected from WebSocket server. ${reason}</em></p>`);
-            
-            setTimeout(connectWebSocket, 5000);
+            // Update the status message to show disconnected state
+            updateStatusMessage();
+            // Do not automatically revert to idle state on disconnect,
+            // as user might be looking at content. Reconnection will handle updates.
+            setTimeout(connectWebSocket, 5000); // Attempt to reconnect
         };
 
-        websocket.onerror = function(event) {
+        websocket.onerror = (event) => {
             updateWsStatus('Error', 'status-error');
             console.error("WebSocket error observed:", event);
-            // addMessageToDisplay("<p class='system-message error-message'><em>WebSocket connection error.</em></p>");
-            if (websocket.readyState !== WebSocket.CLOSED) {
+            // Update the status message to show error state
+            updateStatusMessage();
+            // On error, ensure connection is closed to trigger onclose's reconnect logic
+            if (websocket.readyState !== WebSocket.CLOSED && websocket.readyState !== WebSocket.CLOSING) {
                 websocket.close();
+            } else if (websocket.readyState === WebSocket.CLOSED) {
+                // If already closed (e.g. server unavailable), still schedule reconnect
+                setTimeout(connectWebSocket, 5000);
             }
         };
     }
     
-    // Initial connection attempt
+    // Initial setup
+    showIdleState();
     connectWebSocket();
 });

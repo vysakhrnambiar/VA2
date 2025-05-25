@@ -49,7 +49,7 @@ class OpenAISpeechClient:
         # --- TSM Attributes (for pytsmod) --- START ---
         # For pytsmod.wsola, 'alpha' is the speed factor.
         # alpha > 1.0 for speedup, alpha < 1.0 for slowdown.
-        self.desired_playback_speed = float(self.config.get("TSM_PLAYBACK_SPEED", 0.8)) 
+        self.desired_playback_speed = float(self.config.get("TSM_PLAYBACK_SPEED", 1.0)) 
         self.tsm_enabled = self.desired_playback_speed != 1.0 
 
         self.openai_sample_rate = 24000
@@ -104,11 +104,13 @@ class OpenAISpeechClient:
                 # x: input signal (1D or 2D NumPy array)
                 # alpha: ratio by which the length of the signal is changed ( > 1 for speedup)
                 # Fs: sample rate
+                self.log(f"Blocking call start ")
                 stretched_audio_float32 = wsola(
                     x=segment_np_float32, 
                     s=self.desired_playback_speed 
                     #Fs=self.openai_sample_rate
                 )
+                self.log(f"BLocking call end.")
                 # self.log(f"DEBUG_TSM: Output array shape from wsola: {stretched_audio_float32.shape}")
                 
                 # Convert back to int16 bytes

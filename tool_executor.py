@@ -10,11 +10,24 @@ from tools_definition import (
     RAISE_TICKET_TOOL_NAME,
     GET_BOLT_KB_TOOL_NAME,
     GET_DTC_KB_TOOL_NAME,
-    DISPLAY_ON_INTERFACE_TOOL_NAME
+    DISPLAY_ON_INTERFACE_TOOL_NAME,
+    GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME, # New
+    GENERAL_GOOGLE_SEARCH_TOOL_NAME
 )
 
 # Import the new KB extraction function from kb_llm_extractor.py
 from kb_llm_extractor import extract_relevant_sections
+
+# Import the new Google services module
+try:
+    from google_llm_services import get_gemini_response, GOOGLE_API_KEY
+    GOOGLE_SERVICES_AVAILABLE = bool(GOOGLE_API_KEY)
+except ImportError:
+    print("[TOOL_EXECUTOR] WARNING: google_llm_services.py not found or GOOGLE_API_KEY missing. Google-based tools will not function.")
+    GOOGLE_SERVICES_AVAILABLE = False
+    # Define a dummy get_gemini_response if import fails, so the script doesn't break
+    def get_gemini_response(user_prompt_text: str, system_instruction_text: str, use_google_search_tool: bool = False, model_name: str = "") -> str:
+        return "Error: Google AI services are not available (module load failure)."
 
 # --- Knowledge Base File Paths ---
 KB_FOLDER_PATH = os.path.join(os.path.dirname(__file__), "knowledge_bases")
@@ -221,6 +234,70 @@ def handle_display_on_interface(display_type: str, data: dict, config: dict, tit
         _tool_log(f"Unexpected error in display handler: {e}"); return "Unexpected error displaying content."
 
 
+def handle_get_taxi_ideas_for_today(current_date: str, config: dict, specific_focus: str = None) -> str:
+    _tool_log(f"Handling get_taxi_ideas_for_today. Date: {current_date}, Focus: {specific_focus}")
+    if not GOOGLE_SERVICES_AVAILABLE:
+        return "Error: Google AI services are not available for taxi ideas generation (configuration or API key issue)."
+
+    # This is the system prompt you provided, adapted for use here.
+    # The {current_date} and potential {specific_focus} will be part of the user_prompt to Gemini
+    # or integrated into the system_prompt if that makes more sense for Gemini's behavior.
+    # For now, let's use the user_prompt to convey the core request and date.
+    
+    system_instruction_for_taxi_ideas = f"""
+    You are an AI assistant helping a Dubai Taxi Corporation (DTC) employee.
+    Your goal is to find actionable ideas, relevant news, and event information for taxi services in Dubai for {current_date}.
+    Consider news from sources like Khaleej Times or other local outlets for events, festivals, or important gatherings and their locations.
+    Also, consider if any weather events (e.g., fog, rain, major heat impacting outdoor activities) might impact flights or general transport demand, suggesting a need for more taxis at the airport or other specific areas.
+    Focus on providing a concise summary of actionable ideas.
+    If no specific business-impacting ideas are found for {current_date}, you MUST respond with the exact phrase: 'No new business ideas found for today, {current_date}, based on current information.'
+    Do not add any preamble or conversational fluff beyond this if nothing is found.
+    Only provide information relevant for {current_date}. Do not detail sources in the final output to the user.
+    """
+
+    # The user_prompt_text for Gemini will be the core request.
+    user_prompt_for_gemini = f"Analyze information for Dubai for today, {current_date}, and provide actionable taxi service ideas or relevant event information."
+    if specific_focus:
+        user_prompt_for_gemini += f" Pay special attention to: {specific_focus}."
+    
+    _tool_log(f"Calling Gemini for taxi ideas. User prompt (effective): '{user_prompt_for_gemini}'. System prompt (snippet): '{system_instruction_for_taxi_ideas[:100]}...'")
+    
+    # We expect Gemini to use its internal Google Search tool based on the system prompt.
+    response_text = get_gemini_response(
+        user_prompt_text=user_prompt_for_gemini,
+        system_instruction_text=system_instruction_for_taxi_ideas,
+        use_google_search_tool=True # Crucial: Gemini needs this to look up events/news
+    )
+    return response_text
+
+def handle_general_google_search(search_query: str, config: dict) -> str:
+    _tool_log(f"Handling general_google_search. Query: '{search_query}'")
+    if not GOOGLE_SERVICES_AVAILABLE:
+        return "Error: Google AI services are not available for general search (configuration or API key issue)."
+
+    # System instruction for Gemini when performing a general search (as discussed)
+    system_instruction_for_general_search = """
+    You are an AI assistant. The user is an employee at Dubai Taxi Corporation (DTC) in Dubai.
+    Your task is to answer the user's query based *only* on the information available from the Google Search results provided to you or that you can fetch.
+    Focus on providing factual and concise answers.
+    The context of queries will generally be Dubai-related, professional, and business-oriented (e.g., competition, market trends, local business news, general professional queries relevant to a taxi/transportation company).
+    Tailor your response to be useful for a DTC employee.
+    Avoid speculative or off-topic information unless the search query explicitly asks for it.
+    If the search does not yield a clear answer for the specific query, state that the information could not be found or is not definitive based on the search results.
+    Prioritize information from reputable sources if discernible. Do not add any preamble like 'Okay, here is the information...' Just give the direct answer or state it cannot be found.
+    """
+    
+    _tool_log(f"Calling Gemini for general search. User query: '{search_query}'.")
+    
+    # The user's search_query becomes the user_prompt_text for Gemini.
+    response_text = get_gemini_response(
+        user_prompt_text=search_query,
+        system_instruction_text=system_instruction_for_general_search,
+        use_google_search_tool=True # Essential for this tool
+    )
+    return response_text
+
+
 # Dispatch dictionary to map function names to handler functions
 TOOL_HANDLERS = {
     SEND_EMAIL_SUMMARY_TOOL_NAME: handle_send_email_discussion_summary,
@@ -228,4 +305,7 @@ TOOL_HANDLERS = {
     GET_BOLT_KB_TOOL_NAME: handle_get_bolt_knowledge_base_info,
     GET_DTC_KB_TOOL_NAME: handle_get_dtc_knowledge_base_info,
     DISPLAY_ON_INTERFACE_TOOL_NAME: handle_display_on_interface,
+    # New handlers
+    GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME: handle_get_taxi_ideas_for_today,
+    GENERAL_GOOGLE_SEARCH_TOOL_NAME: handle_general_google_search
 }

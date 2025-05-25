@@ -1,182 +1,307 @@
 /* frontend/style.css */
+html {
+    height: 100%;
+    box-sizing: border-box;
+}
+*, *:before, *:after {
+    box-sizing: inherit;
+}
+
 body {
-    font-family: Arial, sans-serif;
+    font-family: "Space Grotesk", "Noto Sans", sans-serif;
     margin: 0;
     padding: 0;
-    background-color: #f4f4f4;
-    color: #333;
+    height: 100vh; /* Full viewport height */
+    background-color: #100F24;
+    color: #E0E0E0;
     line-height: 1.6;
+    display: flex; /* Use flex for the body itself */
+    flex-direction: column;
+    overflow: hidden; /* Absolutely no scrolling on the body */
 }
 
-.container {
-    width: 80%;
-    margin: auto;
+.app-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    flex-grow: 1;
+    min-height: 0; /* Allow app-container to shrink if necessary (though it should grow) */
     overflow: hidden;
-    padding: 20px;
-    background-color: #fff;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    position: relative;
 }
 
-header {
-    background: #333;
-    color: #fff;
-    padding: 1rem 0;
-    text-align: center;
-    border-bottom: #0779e4 3px solid;
+.app-header {
+    background-color: transparent;
+    color: #FFFFFF;
+    height: 60px;
+    min-height: 60px;
+    padding: 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    z-index: 100;
+    border-bottom: 1px solid #21204B;
 }
 
-header h1 {
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.header-logo-icon {
+    width: 16px;
+    height: 16px;
+    color: #FFFFFF;
+}
+
+.header-logo-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.header-title {
+    font-size: 1.5rem;
+    font-weight: 700;
     margin: 0;
-    padding-bottom: 10px;
+    color: #FFFFFF;
+    letter-spacing: -0.015em;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+}
+
+.settings-button {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #21204B;
+    border-radius: 12px;
+    cursor: pointer;
+    color: #FFFFFF;
+}
+
+.user-profile {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: #FFFFFF;
+    overflow: hidden;
+    position: relative;
+}
+
+.status-indicator {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    font-size: 0;
 }
 
 #ws-status {
-    font-weight: bold;
-    padding: 2px 6px;
-    border-radius: 4px;
+    font-weight: 500;
+    font-size: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: block;
 }
 
-.status-connected {
-    color: #28a745; /* Green */
-    background-color: #e9f7ef;
-}
+.status-connected { background-color: #4ade80; }
+.status-disconnected { background-color: #f87171; }
+.status-error { background-color: #facc15; }
 
-.status-disconnected {
-    color: #dc3545; /* Red */
-    background-color: #fdecea;
-}
-
-.status-error {
-    color: #ffc107; /* Yellow/Orange */
-    background-color: #fff8e1;
+.main-content {
+    flex-grow: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    background-color: #100F24;
+    overflow: hidden;
+    position: relative;
+    padding: 20px 160px;
 }
 
 #display-area {
-    margin-top: 20px;
-    padding: 15px;
-    background: #e9ecef;
-    min-height: 300px;
-    border-radius: 5px;
-    overflow-y: auto; /* Add scroll for many messages */
-    max-height: 60vh; /* Limit height */
-}
-
-.display-item {
-    background: #fff;
-    padding: 10px;
-    margin-bottom: 10px;
-    border-left: 5px solid #007bff;
-    border-radius: 3px;
-}
-
-.message-header {
-    font-size: 0.9em;
-    color: #555;
-    margin-bottom: 5px;
-    border-bottom: 1px dotted #ccc;
-    padding-bottom: 3px;
-}
-
-.raw-json {
-    background-color: #f8f9fa;
-    padding: 8px;
-    border-radius: 4px;
-    font-family: monospace;
-    white-space: pre-wrap; /* Ensure long lines wrap */
-    word-break: break-all; /* Break long words/strings */
-}
-
-.system-message {
-    color: #666;
-    font-style: italic;
-    font-size: 0.9em;
-}
-
-.error-message {
-    color: #c00;
-    font-weight: bold;
-}
-
-.placeholder {
-    color: #777;
-    text-align: center;
-    padding-top: 50px;
-    font-style: italic;
-}
-
-footer {
-    text-align: center;
+    flex-grow: 1;
+    min-height: 0;
+    width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
     padding: 20px;
-    margin-top: 20px;
-    color: #777;
-    font-size: 0.9em;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    text-align: center;
 }
 
-
-#display-area {
-    /* ... existing styles ... */
-    display: flex; /* Helps with centering if only one item */
-    flex-direction: column; /* Stack items vertically */
-    align-items: center; /* Center items like graphs horizontally */
+#idle-state-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #FFFFFF;
+    padding: 15px;
+    max-width: 90%;
 }
 
-.display-item {
-    /* ... existing styles ... */
-    width: 100%; /* Allow items to take full width of display-area */
-    box-sizing: border-box; /* Include padding and border in the element's total width and height */
+#animated-logo-idle {
+    width: 50%;
+    max-width: 500px;
+    min-width: 250px;
+    object-fit: contain;
+    margin-bottom: 40px;
 }
 
-.markdown-content {
-    background: #fff;
-    padding: 15px 20px;
-    margin-bottom: 15px;
-    border-radius: 5px;
-    border: 1px solid #ddd;
-    width: 90%; /* Or max-width as preferred */
-    max-width: 800px; /* Example max width */
-    text-align: left; /* Align markdown content to the left */
+#idle-state-content h2 {
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: normal;
+    line-height: 1.2;
+    margin: 0 0 16px 0;
+    color: #FFFFFF;
 }
-.markdown-content h1, .markdown-content h2, .markdown-content h3 {
-    margin-top: 0.5em;
-    margin-bottom: 0.5em;
-    color: #333;
+
+#idle-state-content p {
+    font-size: 1.25rem;
+    font-weight: 400;
+    line-height: 1.4;
+    margin: 0;
+    color: #FFFFFF;
+    max-width: 600px;
 }
-.markdown-content table {
-    width: auto; /* Let table size itself, or 100% */
-    border-collapse: collapse;
-    margin-top: 1em;
-    margin-bottom: 1em;
-}
-.markdown-content th, .markdown-content td {
-    border: 1px solid #ccc;
-    padding: 8px;
+
+#active-content-wrapper {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    border-radius: 0;
+    padding: 0;
+    box-sizing: border-box;
     text-align: left;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
 }
-.markdown-content th {
-    background-color: #f0f0f0;
-}
-.markdown-content ul, .markdown-content ol {
-    padding-left: 20px;
+
+.markdown-content, .graph-content {
+    background: transparent;
+    padding: 20px;
+    margin: 0 auto;
+    width: 100%;
+    max-width: 95%;
+    max-height: 100%;
+    color: #c7c7d1;
+    overflow: hidden;
+    border: 1px solid #21204B;
+    border-radius: 12px;
+    flex-shrink: 1;
+    min-height: 0;
 }
 
 .graph-content {
-    background: #fff;
-    padding: 20px;
-    margin-bottom: 15px;
-    border-radius: 8px;
-    border: 1px solid #ddd;
-    width: 90%; /* Control graph width */
-    max-width: 700px; /* Max width for larger screens */
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-}
-.chart-title {
-    text-align: center;
-    margin-bottom: 15px;
-    font-size: 1.4em;
-    color: #333;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
-.unknown-type pre {
-    background-color: #ffecec; /* Highlight unknown type dumps */
-    border: 1px solid #f5c6cb;
+.graph-content canvas {
+    max-width: 100%;
+    max-height: calc(100% - 40px);
+    object-fit: contain;
+}
+
+.markdown-content h1, .markdown-content h2, .markdown-content h3 {
+    margin-top: 0.4em;
+    margin-bottom: 0.2em;
+    color: #e0e0ff;
+    border-bottom: 1px solid #2a2958;
+    padding-bottom: 0.15em;
+    font-size: 1.1em;
+}
+
+.markdown-content h1 { font-size: 1.25em; }
+.markdown-content p { font-size: 0.8em; margin-bottom: 0.4em; line-height: 1.3;}
+.markdown-content table { width: auto; max-width: 100%; border-collapse: collapse; margin: 0.4em 0; font-size: 0.7em; }
+.markdown-content th, .markdown-content td { border: 1px solid #302f58; padding: 4px 5px; text-align: left; }
+.markdown-content th { background-color: #1f1e3d; color: #d0d0ff; font-weight: 600; }
+.markdown-content tr:nth-child(even) td { background-color: #191833; }
+.markdown-content ul, .markdown-content ol { padding-left: 15px; font-size: 0.8em; margin-bottom: 0.4em;}
+.markdown-content code { background-color: #1f1e3d; padding: 0.1em 0.2em; border-radius: 2px; font-family: "Courier New", Courier, monospace; color: #f472b6; font-size: 0.75em;}
+.markdown-content pre { background-color: #1f1e3d; padding: 6px; border-radius: 3px; overflow: auto; font-size: 0.7em; max-height: 100px }
+.markdown-content pre code { background-color: transparent; padding: 0; }
+.markdown-content blockquote { border-left: 2px solid #60a5fa; padding-left: 6px; margin-left: 0; color: #a5b4fc; font-size: 0.8em; margin-bottom: 0.4em;}
+.markdown-content a { color: #818cf8; text-decoration: none; }
+.markdown-content a:hover { text-decoration: underline; }
+
+.chart-title {
+    text-align: center;
+    margin-bottom: 5px;
+    font-size: 1em;
+    color: #e0e0ff;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+/* Connection status styles */
+.disconnected-message {
+    color: #f87171; /* Red color for disconnected state */
+    font-weight: 500;
+    animation: blink 2s ease-in-out infinite;
+}
+
+/* Animation classes */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+}
+
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+    100% { transform: translateY(0px); }
+}
+
+@keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
+}
+
+.animate-fade-in {
+    animation: fadeIn 1s ease-out forwards;
+}
+
+.animate-fade-out {
+    animation: fadeOut 1s ease-out forwards;
+}
+
+.animate-pulse {
+    animation: pulse 3s ease-in-out infinite;
+}
+
+.animate-float {
+    animation: float 6s ease-in-out infinite;
 }
