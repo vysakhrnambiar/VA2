@@ -98,15 +98,15 @@ def get_gemini_response(
 
         if response.candidates and response.candidates[0].content.parts:
             generated_text = "".join(part.text for part in response.candidates[0].content.parts if hasattr(part, 'text'))
-            logger.debug(f"Gemini generated text (first 100 chars): {generated_text[:100]}")
+            logger.debug(f"Gemini generated text: {generated_text}")
             
             if not generated_text.strip() and use_google_search_tool:
-                 logger.warning(f"Gemini returned empty text despite search tool being enabled for prompt: {user_prompt_text[:60]}")
+                 logger.warning(f"Gemini returned empty text despite search tool being enabled for prompt: {user_prompt_text}")
                  if response.prompt_feedback and response.prompt_feedback.block_reason:
                      block_reason_msg = response.prompt_feedback.block_reason_message or str(response.prompt_feedback.block_reason)
                      logger.warning(f"Gemini prompt blocked. Reason: {block_reason_msg}")
                      return f"Information retrieval blocked by safety settings. Reason: {block_reason_msg}"
-                 return f"No specific information found by Google AI for '{user_prompt_text[:60]}...'."
+                 return f"No specific information found by Google AI for '{user_prompt_text}...'."
             return generated_text.strip()
         else:
             block_reason_msg = "Unknown reason"
@@ -123,7 +123,7 @@ def get_gemini_response(
 
     except Exception as e:
         logger.error(f"Exception during Gemini API call: {e}", exc_info=True)
-        return f"Error: Could not get a response from Google AI service. Detail: {str(e)[:150]}"
+        return f"Error: Could not get a response from Google AI service. Detail: {str(e)}"
 
 # --- SIMPLIFIED Test Section ---
 # --- ULTRA-SIMPLIFIED Test Section (Focus: Grounding with Default Model) ---

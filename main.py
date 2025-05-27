@@ -58,10 +58,80 @@ APP_CONFIG = {
 }
 
 # --- Logging ---
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Set up file logger with rotation
+logger = None
+
+def _setup_file_logger():
+    global logger
+    if logger is not None:
+        return  # Already set up
+        
+    try:
+        # Create logs directory if it doesn't exist
+        os.makedirs("logs", exist_ok=True)
+        
+        # Set up logger
+        logger = logging.getLogger("MainAppLogger")
+        logger.setLevel(logging.DEBUG)
+        
+        # Remove any existing handlers to avoid duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            
+        # File handler with rotation (10 MB max size, keep 5 backup files)
+        log_filename = "logs/app.log"
+        file_handler = RotatingFileHandler(
+            log_filename,
+            maxBytes=10*1024*1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8"
+        )
+        
+        # Create formatter and add to handler
+        formatter = logging.Formatter('%(asctime)s - [MAIN_APP] - %(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # Add handler to logger
+        logger.addHandler(file_handler)
+        
+        print(f"File logging initialized with rotation: {log_filename}")
+    except Exception as e:
+        print(f"ERROR: Could not initialize log file: {e}")
+        logger = None
+
+# Call setup at module import time
+_setup_file_logger()
+
+# Keep the original log function signature but enhance it to also log to file
 def log(msg):
+    # Original console output
     print(f"[MAIN_APP] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}")
+    
+    # Also log to file if logger is available
+    global logger
+    if logger is not None:
+        try:
+            logger.info(msg)
+        except Exception as e:
+            print(f"ERROR: Could not write to log file: {e}")
+
+# Keep the original log_section function signature but enhance it
 def log_section(title):
-    print(f"\n===== {title} =====")
+    section_header = f"\n===== {title} ====="
+    
+    # Original console output
+    print(section_header)
+    
+    # Also log to file if logger is available
+    global logger
+    if logger is not None:
+        try:
+            logger.info(section_header)
+        except Exception as e:
+            print(f"ERROR: Could not write section to log file: {e}")
 
 # --- Initialize VAD Instance ---
 vad_instance = None

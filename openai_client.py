@@ -146,7 +146,12 @@ class OpenAISpeechClient:
                 "output_audio_format": "pcm16",
                 "tools": ALL_TOOLS, 
                 "tool_choice": "auto", 
-                "instructions": llm_instructions
+                "instructions": llm_instructions,
+                "input_audio_transcription": {
+                    "model": "whisper-1",   # or another supported model if needed
+                    # "language": "en",    # Optional: specify language if needed
+                    # "timestamp_granularities": ["word", "segment"], # Optional
+                }
             }
         }
         ws.send(json.dumps(session_config))

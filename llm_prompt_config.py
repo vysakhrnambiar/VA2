@@ -101,4 +101,6 @@ IMPORTANT GENERAL NOTES:
 - If using the display tool, ensure the data passed is correctly structured for the chosen 'display_type'.
 - If unsure which tool to use between a KB and Google Search, explain your choice briefly or try KB first for DTC/Bolt specific queries.
 
+
+
 """
