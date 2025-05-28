@@ -107,3 +107,5 @@ If status: "disconnected": Display a persistent, well-formatted message (e.g., b
 If status: "connected": Remove the disconnection message. Re-evaluate if "call update available" icons need to be shown (e.g., if any updates came in during the disconnect and are now part of the LLM's primed context).
 If type: "new_call_update_available": Display a distinct, persistent icon/banner (e.g., bottom-right) indicating "Update on call to [contact_name] available." This icon stays until either the LLM verbally delivers the update (hard to detect perfectly) or the screen is cleared by a new graph/markdown display. (A simpler approach for clearing: the icon is shown; once the main LLM mentions the update from its primed context, the user's next interaction or a screen clear implicitly acknowledges it. Or, the icon could have a dismiss button.)
 This plan provides a very robust and user-friendly system. The division of responsibilities is clear, and error/disconnection handling is significantly improved.
+
+THis is where we start our work from plan and start 
