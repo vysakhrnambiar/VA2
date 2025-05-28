@@ -6,9 +6,14 @@ SEND_EMAIL_SUMMARY_TOOL_NAME = "send_email_discussion_summary"
 RAISE_TICKET_TOOL_NAME = "raise_ticket_for_missing_knowledge"
 GET_BOLT_KB_TOOL_NAME = "get_bolt_knowledge_base_info"
 GET_DTC_KB_TOOL_NAME = "get_dtc_knowledge_base_info"
-DISPLAY_ON_INTERFACE_TOOL_NAME = "display_on_interface" # New tool name
+DISPLAY_ON_INTERFACE_TOOL_NAME = "display_on_interface"
 GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME = "get_taxi_ideas_for_today"
 GENERAL_GOOGLE_SEARCH_TOOL_NAME = "general_google_search"
+
+# New Tool Names for Phase 1
+SCHEDULE_OUTBOUND_CALL_TOOL_NAME = "schedule_outbound_call"
+CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME = "check_scheduled_call_status"
+
 
 # --- Tool Definitions ---
 
@@ -108,7 +113,6 @@ TOOL_GET_DTC_KB = {
     }
 }
 
-# New Tool Definition for Displaying on Interface
 TOOL_DISPLAY_ON_INTERFACE = {
     "type": "function",
     "name": DISPLAY_ON_INTERFACE_TOOL_NAME,
@@ -154,7 +158,7 @@ TOOL_DISPLAY_ON_INTERFACE = {
                         },
                         "description": "For graph types: An array of dataset objects. Each object contains a label for the dataset and its corresponding values. For pie charts, typically only one dataset is used."
                     },
-                    "options": { # LLM can suggest general options
+                    "options": {
                         "type": "object",
                         "properties": {
                             "animated": {"type": "boolean", "description": "Suggest if the graph should be animated (if supported by the frontend). Default: true."},
@@ -164,7 +168,7 @@ TOOL_DISPLAY_ON_INTERFACE = {
                         "description": "Optional: General display options or hints for the frontend, like animation or axis labels for graphs."
                     }
                 },
-                "description_detailed_examples": ( # Custom field for our reference, not for OpenAI schema
+                "description_detailed_examples": ( 
                     "Example for 'markdown': data: { 'content': '# Report Title\\n- Point 1\\n- Point 2\\n| Col A | Col B |\\n|---|---|\\n| 1 | 2 |' }\n"
                     "Example for 'graph_bar': data: { 'labels': ['Jan', 'Feb'], 'datasets': [{'label': 'Revenue', 'values': [100, 150]}], 'options': {'x_axis_label': 'Month'} }\n"
                     "Example for 'graph_pie': data: { 'labels': ['Slice A', 'Slice B'], 'datasets': [{'label': 'Distribution', 'values': [60, 40]}] }"
@@ -172,15 +176,9 @@ TOOL_DISPLAY_ON_INTERFACE = {
             }
         },
         "required": ["display_type", "data"]
-        # Depending on display_type, specific fields within 'data' become effectively required.
-        # For example, if display_type is 'markdown', data.content is required.
-        # If display_type is 'graph_bar', data.labels and data.datasets are required.
-        # The LLM needs to be prompted/trained to understand this conditional requirement.
-        # We can also add logic in the tool handler to validate this.
     }
 }
 
-# --- New Tool Definitions ---
 TOOL_GET_TAXI_IDEAS = {
     "type": "function",
     "name": GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME,
@@ -227,8 +225,78 @@ TOOL_GENERAL_GOOGLE_SEARCH = {
     }
 }
 
+# --- New Tool Definitions for Phase 1 ---
 
-# List of all tools to be passed to OpenAI
+TOOL_SCHEDULE_OUTBOUND_CALL = {
+    "type": "function",
+    "name": SCHEDULE_OUTBOUND_CALL_TOOL_NAME,
+    "description": "Schedules an outbound call to be made by the automated calling system. Provide the phone number, contact name, and a detailed objective for the call.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "phone_number": {
+                "type": "string",
+                "description": "The international phone number to call (e.g., '+1234567890')."
+            },
+            "contact_name": {
+                "type": "string",
+                "description": "The name of the person or entity to be called."
+            },
+            "call_objective": {
+                "type": "string",
+                "description": "A detailed description of what the call aims to achieve. This will be used by the automated agent to conduct the call."
+            }
+        },
+        "required": ["phone_number", "contact_name", "call_objective"]
+    }
+}
+
+# In tools_definition.py
+
+# (SCHEDULE_OUTBOUND_CALL_TOOL_NAME and CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME already defined)
+
+TOOL_CHECK_SCHEDULED_CALL_STATUS = {
+    "type": "function",
+    "name": CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME, # Assuming CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME is already defined
+    "description": (
+        "Checks the status of a previously scheduled outbound call. "
+        "You can query by contact name, a snippet of the call's objective, or the approximate date/time of the call or its expected completion. "
+        "The system will try to find the most relevant call."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "contact_name": {
+                "type": "string",
+                "description": "Optional: The name of the contact for the call you want to check (e.g., 'Mr. Akhil')."
+            },
+            "call_objective_snippet": {
+                "type": "string",
+                "description": "Optional: A keyword or phrase from the objective of the call (e.g., 'fleet deployment', 'Q3 report')."
+            },
+            "date_reference": {
+                "type": "string",
+                "description": (
+                    "Optional: A specific date (e.g., 'May 20th', '2024-05-20', 'yesterday', 'today') or a relative time reference "
+                    "(e.g., 'last call', 'most recent', 'two days back', 'this morning', 'yesterday afternoon')."
+                )
+            },
+            "time_of_day_preference": {
+                "type": "string",
+                "enum": ["any", "morning", "afternoon", "evening"],
+                "description": "Optional: If a date is specified, further refine by time of day (e.g., 'morning', 'afternoon'). Defaults to 'any' if not specified."
+            },
+            "job_id": { # Keep for system use, but deprioritize for user-facing LLM instructions
+                "type": "integer",
+                "description": "Optional: The specific internal ID of the scheduled call job. Less common for users to know."
+            }
+        },
+        # No parameters strictly required by schema; handler will manage.
+    }
+}
+
+# Ensure ALL_TOOLS list includes this updated definition.
+
 
 # List of all tools to be passed to OpenAI
 ALL_TOOLS = [
@@ -237,8 +305,10 @@ ALL_TOOLS = [
     TOOL_RAISE_TICKET,
     TOOL_GET_BOLT_KB,
     TOOL_GET_DTC_KB,
-    TOOL_DISPLAY_ON_INTERFACE, # Add the new tool here
-    TOOL_GET_TAXI_IDEAS, # Add new tool
-    TOOL_GENERAL_GOOGLE_SEARCH # Add new tool
+    TOOL_DISPLAY_ON_INTERFACE,
+    TOOL_GET_TAXI_IDEAS,
+    TOOL_GENERAL_GOOGLE_SEARCH,
+    # Add new tools for Phase 1
+    TOOL_SCHEDULE_OUTBOUND_CALL,
+    TOOL_CHECK_SCHEDULED_CALL_STATUS
 ]
-

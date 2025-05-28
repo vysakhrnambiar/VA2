@@ -305,3 +305,61 @@ body {
 .animate-float {
     animation: float 6s ease-in-out infinite;
 }
+
+/* Add to frontend/style.css */
+
+/* General Notification Banner Styling */
+.notification-banner {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 20px;
+    border-radius: 6px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    z-index: 1000; /* Ensure it's on top */
+    font-size: 0.9rem;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.5s ease-in-out, bottom 0.5s ease-in-out, top 0.5s ease-in-out;
+    display: none; /* Start hidden */
+    max-width: 80%;
+    text-align: center;
+}
+
+/* Connection Status Banner Specifics */
+#connection-status-banner {
+    bottom: -100px; /* Start off-screen */
+    background-color: #374151; /* Default gray */
+    color: #e5e7eb;
+}
+#connection-status-banner.status-connected-banner {
+    background-color: #10b981; /* Green */
+    color: white;
+    bottom: 20px; /* Animate in */
+}
+#connection-status-banner.status-disconnected-banner {
+    background-color: #ef4444; /* Red */
+    color: white;
+    bottom: 20px; /* Animate in */
+}
+#connection-status-banner.status-error-banner {
+    background-color: #f59e0b; /* Amber */
+    color: white;
+    bottom: 20px; /* Animate in */
+}
+
+
+/* Call Update Notification Area Specifics */
+#call-update-notification-area {
+    top: 80px; /* Below header */
+    right: 20px;
+    left: auto; /* Override general centering */
+    transform: none; /* Override general centering */
+    background-color: #3b82f6; /* Blue */
+    color: white;
+    padding: 12px 18px;
+}
+#call-update-notification-area strong {
+    font-weight: 700;
+}
+

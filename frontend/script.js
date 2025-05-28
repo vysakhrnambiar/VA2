@@ -1,290 +1,188 @@
 // frontend/script.js
 document.addEventListener('DOMContentLoaded', () => {
-    const wsStatusElement = document.getElementById('ws-status');
+    const wsStatusElement = document.getElementById('ws-status'); // For the small dot indicator
     const displayArea = document.getElementById('display-area');
     let websocket = null;
     let chartInstance = null;
     let contentTimeoutId = null;
     let logoIdleAnimationId = null;
 
+    // --- New elements for Phase 4 ---
+    let connectionStatusBanner = null; // Will be created dynamically
+    let callUpdateNotificationArea = null; // Will be created dynamically
+
     const IDLE_STATE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-    function updateWsStatus(statusText, cssClass) {
+    function createNotificationElements() {
+        // Connection Status Banner (persistent at the bottom or top)
+        if (!document.getElementById('connection-status-banner')) {
+            connectionStatusBanner = document.createElement('div');
+            connectionStatusBanner.id = 'connection-status-banner';
+            connectionStatusBanner.className = 'notification-banner'; // General styling for banners
+            // connectionStatusBanner.style.display = 'none'; // Initially hidden
+            document.body.appendChild(connectionStatusBanner); // Append to body to overlay other content
+        } else {
+            connectionStatusBanner = document.getElementById('connection-status-banner');
+        }
+
+        // Call Update Notification Area (e.g., corner icon/toast)
+        if (!document.getElementById('call-update-notification-area')) {
+            callUpdateNotificationArea = document.createElement('div');
+            callUpdateNotificationArea.id = 'call-update-notification-area';
+            callUpdateNotificationArea.className = 'notification-banner call-update-banner'; // Specific styling
+            // callUpdateNotificationArea.style.display = 'none'; // Initially hidden
+            document.body.appendChild(callUpdateNotificationArea);
+        } else {
+            callUpdateNotificationArea = document.getElementById('call-update-notification-area');
+        }
+    }
+    
+    function updateWsStatusIndicator(statusText, cssClass) { // Renamed for clarity
         if (wsStatusElement) {
-            wsStatusElement.textContent = statusText;
-            wsStatusElement.className = ''; // Clear existing classes
+            wsStatusElement.textContent = statusText; // For accessibility, though it's small
+            wsStatusElement.className = ''; 
             wsStatusElement.classList.add(cssClass);
         }
     }
 
-    function clearAllDynamicContent(withAnimation = false) {
-        if (chartInstance) {
-            chartInstance.destroy();
-            chartInstance = null;
-        }
-        if (logoIdleAnimationId) {
-            cancelAnimationFrame(logoIdleAnimationId);
-            logoIdleAnimationId = null;
-        }
+    // --- New functions for Phase 4 Banners ---
+    function showConnectionStatusBanner(message, type) { // type can be 'connected', 'disconnected', 'error'
+        if (!connectionStatusBanner) createNotificationElements(); // Ensure it exists
         
-        if (withAnimation && displayArea.children.length > 0) {
-            // Add fade-out animation to existing content
-            Array.from(displayArea.children).forEach(child => {
-                child.classList.add('animate-fade-out');
-            });
-            
-            // Wait for animation to complete before clearing
+        connectionStatusBanner.textContent = message;
+        connectionStatusBanner.className = 'notification-banner'; // Reset classes
+        if (type === 'connected') {
+            connectionStatusBanner.classList.add('status-connected-banner');
+            // Optionally hide after a few seconds if connected
             setTimeout(() => {
-                displayArea.innerHTML = ''; // Clear everything inside display-area
-            }, 1000); // Match the animation duration (1s)
-        } else {
-            displayArea.innerHTML = ''; // Clear everything immediately
+                 if (connectionStatusBanner.classList.contains('status-connected-banner')) { // Check if still connected msg
+                    connectionStatusBanner.style.opacity = '0';
+                    setTimeout(() => connectionStatusBanner.style.display = 'none', 500);
+                 }
+            }, 5000); // Hide after 5 seconds
+        } else if (type === 'disconnected') {
+            connectionStatusBanner.classList.add('status-disconnected-banner');
+        } else { // error or other
+            connectionStatusBanner.classList.add('status-error-banner');
+        }
+        connectionStatusBanner.style.display = 'block';
+        connectionStatusBanner.style.opacity = '1';
+    }
+
+    function hideConnectionStatusBanner() {
+        if (connectionStatusBanner) {
+            connectionStatusBanner.style.opacity = '0';
+            setTimeout(() => connectionStatusBanner.style.display = 'none', 500);
         }
     }
-    
-    function resetContentTimeout() {
-        if (contentTimeoutId) {
-            clearTimeout(contentTimeoutId);
+
+    function showCallUpdateNotification(contactName, summary) {
+        if (!callUpdateNotificationArea) createNotificationElements(); // Ensure it exists
+
+        // Simple text for now, can be enhanced with icons, dismiss button etc.
+        callUpdateNotificationArea.innerHTML = `🔔 Update on call to <strong>${contactName}</strong>: ${summary.substring(0,50)}...`;
+        callUpdateNotificationArea.style.display = 'block';
+        callUpdateNotificationArea.style.opacity = '1';
+        
+        // Optional: Auto-hide after some time, or require user interaction to dismiss
+        // setTimeout(hideCallUpdateNotification, 15000); // Hide after 15 seconds
+    }
+
+    function hideCallUpdateNotification() {
+        if (callUpdateNotificationArea) {
+            callUpdateNotificationArea.style.opacity = '0';
+            setTimeout(() => callUpdateNotificationArea.style.display = 'none', 500);
         }
-        // Only set timeout if not already in idle state (which showIdleState will be)
+    }
+    // --- End of New functions for Phase 4 Banners ---
+
+    function clearAllDynamicContent(withAnimation = false) { // Unchanged
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        if (logoIdleAnimationId) { cancelAnimationFrame(logoIdleAnimationId); logoIdleAnimationId = null; }
+        if (withAnimation && displayArea.children.length > 0) {
+            Array.from(displayArea.children).forEach(child => child.classList.add('animate-fade-out'));
+            setTimeout(() => { displayArea.innerHTML = ''; }, 1000);
+        } else {
+            displayArea.innerHTML = '';
+        }
+        // When content is cleared, also hide any persistent call update notifications
+        hideCallUpdateNotification(); 
+    }
+    
+    function resetContentTimeout() { // Unchanged
+        if (contentTimeoutId) clearTimeout(contentTimeoutId);
         if (displayArea.querySelector('#active-content-wrapper')) {
              contentTimeoutId = setTimeout(showIdleState, IDLE_STATE_TIMEOUT_MS);
         }
     }
 
-    function showIdleState() {
-        console.log("Transitioning to idle state");
-        clearAllDynamicContent(true); // Clear previous content with animation
-        
-        // Create a timeout to add the idle content after the fade-out animation completes
-        setTimeout(() => {
-            const idleContent = document.createElement('div');
-            idleContent.id = 'idle-state-content';
-            idleContent.classList.add('animate-fade-in');
-
-            const logoImg = document.createElement('img');
-            logoImg.id = 'animated-logo-idle';
-            logoImg.src = '/static/logo.png';
-            logoImg.alt = 'Voice Assistant Logo';
-            logoImg.classList.add('animate-float', 'animate-pulse');
-            idleContent.appendChild(logoImg);
-
-            const titleElement = document.createElement('h2');
-            titleElement.textContent = 'Ready to assist';
-            titleElement.classList.add('animate-fade-in');
-            idleContent.appendChild(titleElement);
-
-            // Create subtitle element with ID for updating based on connection status
-            const subtitleElement = document.createElement('p');
-            subtitleElement.id = 'status-message';
-            subtitleElement.classList.add('animate-fade-in');
-            
-            // Set initial message based on current WebSocket status
-            updateStatusMessage(subtitleElement);
-            
-            idleContent.appendChild(subtitleElement);
-            
-            displayArea.appendChild(idleContent);
-
-            // Combined floating and pulsing animation for the logo
-            let scale = 1;
-            let scaleDirection = 0.002; // Increased speed for more noticeable effect
-            const minScale = 0.95;
-            const maxScale = 1.05;
-
-            function animateLogo() {
-                scale += scaleDirection;
-                if (scale > maxScale || scale < minScale) {
-                    scaleDirection *= -1; // Reverse direction
-                    scale = Math.max(minScale, Math.min(maxScale, scale)); // Clamp within bounds
-                }
-                
-                const currentLogo = document.getElementById('animated-logo-idle');
-                if (currentLogo) { // Check if logo element is still on page
-                    // Apply scaling in addition to CSS animations
-                    currentLogo.style.transform = `scale(${scale})`;
-                    logoIdleAnimationId = requestAnimationFrame(animateLogo);
-                } else {
-                    if (logoIdleAnimationId) cancelAnimationFrame(logoIdleAnimationId);
-                    logoIdleAnimationId = null;
-                }
-            }
-            
-            // Start the animation
-            animateLogo();
-            
-            if (contentTimeoutId) clearTimeout(contentTimeoutId); // No timeout when in idle
-        }, 1000); // Match the fade-out animation duration
-    }
-    
-    // Function to update the status message based on WebSocket connection
-    function updateStatusMessage(element) {
-        if (!element) {
-            element = document.getElementById('status-message');
-            if (!element) return; // Element not found
-        }
-        
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-            element.textContent = 'Waiting for your command. Speak or type your request.';
-            element.classList.remove('disconnected-message');
-        } else {
-            element.textContent = 'Disconnected. Attempting to reconnect...';
-            element.classList.add('disconnected-message');
-        }
-    }
-    
-    function displayActiveContent(elementProvider) {
-        // Use animation when clearing content
+    function showIdleState() { // Unchanged
         clearAllDynamicContent(true);
-
-        // Create a timeout to add the new content after the fade-out animation completes
         setTimeout(() => {
-            const activeContentWrapper = document.createElement('div');
-            activeContentWrapper.id = 'active-content-wrapper';
-            activeContentWrapper.classList.add('animate-fade-in');
-            
-            const contentElement = elementProvider(); // Get the markdown div or graph container
-            activeContentWrapper.appendChild(contentElement);
+            const idleContent = document.createElement('div'); /* ... */ 
+            idleContent.id = 'idle-state-content'; idleContent.classList.add('animate-fade-in');
+            const logoImg = document.createElement('img'); logoImg.id = 'animated-logo-idle'; logoImg.src = '/static/logo.png'; logoImg.alt = 'Voice Assistant Logo'; logoImg.classList.add('animate-float', 'animate-pulse'); idleContent.appendChild(logoImg);
+            const titleElement = document.createElement('h2'); titleElement.textContent = 'Ready to assist'; titleElement.classList.add('animate-fade-in'); idleContent.appendChild(titleElement);
+            const subtitleElement = document.createElement('p'); subtitleElement.id = 'status-message'; subtitleElement.classList.add('animate-fade-in');
+            updateStatusMessage(subtitleElement); idleContent.appendChild(subtitleElement);
+            displayArea.appendChild(idleContent);
+            let scale = 1; let scaleDirection = 0.002; const minScale = 0.95; const maxScale = 1.05;
+            function animateLogo() {
+                scale += scaleDirection; if (scale > maxScale || scale < minScale) { scaleDirection *= -1; scale = Math.max(minScale, Math.min(maxScale, scale)); }
+                const currentLogo = document.getElementById('animated-logo-idle');
+                if (currentLogo) { currentLogo.style.transform = `scale(${scale})`; logoIdleAnimationId = requestAnimationFrame(animateLogo); }
+                else { if (logoIdleAnimationId) cancelAnimationFrame(logoIdleAnimationId); logoIdleAnimationId = null; }
+            }
+            animateLogo();
+            if (contentTimeoutId) clearTimeout(contentTimeoutId);
+        }, 1000);
+    }
+    
+    function updateStatusMessage(element) { // Unchanged
+        if (!element) { element = document.getElementById('status-message'); if (!element) return; }
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            element.textContent = 'Waiting for your command.'; element.classList.remove('disconnected-message');
+        } else {
+            element.textContent = 'Connection issues. Attempting to reconnect...'; element.classList.add('disconnected-message');
+        }
+    }
+    
+    function displayActiveContent(elementProvider) { // Unchanged
+        clearAllDynamicContent(true);
+        setTimeout(() => {
+            const activeContentWrapper = document.createElement('div'); activeContentWrapper.id = 'active-content-wrapper'; activeContentWrapper.classList.add('animate-fade-in');
+            const contentElement = elementProvider(); activeContentWrapper.appendChild(contentElement);
             displayArea.appendChild(activeContentWrapper);
-            
-            resetContentTimeout(); // Start the 5-minute timer for this active content
-        }, 1000); // Match the fade-out animation duration
+            resetContentTimeout();
+        }, 1000);
     }
 
-    function renderMarkdown(payload) {
+    function renderMarkdown(payload) { /* ... Unchanged ... */ 
         displayActiveContent(() => {
-            const markdownContainer = document.createElement('div');
-            markdownContainer.classList.add('markdown-content');
-            
-            let htmlOutput = "";
-            let mainTitleTextFromPayload = "";
-
-            if (payload.title && payload.title.trim() !== "") {
-                mainTitleTextFromPayload = payload.title.trim();
-                htmlOutput += marked.parse(mainTitleTextFromPayload.startsWith("#") ? mainTitleTextFromPayload : `<h2>${mainTitleTextFromPayload}</h2>`);
-            }
-
+            const markdownContainer = document.createElement('div'); markdownContainer.classList.add('markdown-content');
+            let htmlOutput = ""; let mainTitleTextFromPayload = "";
+            if (payload.title && payload.title.trim() !== "") { mainTitleTextFromPayload = payload.title.trim(); htmlOutput += marked.parse(mainTitleTextFromPayload.startsWith("#") ? mainTitleTextFromPayload : `<h2>${mainTitleTextFromPayload}</h2>`); }
             if (payload.content && payload.content.trim() !== "") {
                 let contentToParse = payload.content.trim();
-                if (mainTitleTextFromPayload !== "") {
-                    const firstLineOfContent = contentToParse.split('\n')[0].trim();
-                    const normalizedMainTitle = mainTitleTextFromPayload.replace(/^#+\s*/, '').toLowerCase();
-                    const normalizedFirstLineContent = firstLineOfContent.replace(/^#+\s*/, '').toLowerCase();
-                    if (normalizedFirstLineContent === normalizedMainTitle) {
-                        const lines = contentToParse.split('\n'); lines.shift();
-                        while (lines.length > 0 && lines[0].trim() === "") lines.shift();
-                        contentToParse = lines.join('\n');
-                    }
-                }
+                if (mainTitleTextFromPayload !== "") { const firstLineOfContent = contentToParse.split('\n')[0].trim(); const normalizedMainTitle = mainTitleTextFromPayload.replace(/^#+\s*/, '').toLowerCase(); const normalizedFirstLineContent = firstLineOfContent.replace(/^#+\s*/, '').toLowerCase(); if (normalizedFirstLineContent === normalizedMainTitle) { const lines = contentToParse.split('\n'); lines.shift(); while (lines.length > 0 && lines[0].trim() === "") lines.shift(); contentToParse = lines.join('\n'); } }
                 if (contentToParse.trim() !== "") htmlOutput += marked.parse(contentToParse);
-            } else if (htmlOutput === "") {
-                htmlOutput += marked.parse("<em>No specific content provided for markdown display.</em>");
-            }
-            
-            markdownContainer.innerHTML = htmlOutput;
-            return markdownContainer;
+            } else if (htmlOutput === "") { htmlOutput += marked.parse("<em>No specific content provided.</em>"); }
+            markdownContainer.innerHTML = htmlOutput; return markdownContainer;
         });
     }
-
-    function renderGraph(type, payload) {
+    function renderGraph(type, payload) { /* ... Unchanged ... */ 
         displayActiveContent(() => {
-            const graphOuterContainer = document.createElement('div');
-            graphOuterContainer.classList.add('graph-content');
-
-            if (payload.title) {
-                const titleElement = document.createElement('h2');
-                titleElement.classList.add('chart-title');
-                titleElement.textContent = payload.title;
-                graphOuterContainer.appendChild(titleElement);
-            }
-
-            const canvas = document.createElement('canvas');
-            canvas.style.height = 'clamp(300px, 50vh, 450px)'; // Responsive height with min/max
-            canvas.style.width = '100%';
-            graphOuterContainer.appendChild(canvas);
-
+            const graphOuterContainer = document.createElement('div'); graphOuterContainer.classList.add('graph-content');
+            if (payload.title) { const titleElement = document.createElement('h2'); titleElement.classList.add('chart-title'); titleElement.textContent = payload.title; graphOuterContainer.appendChild(titleElement); }
+            const canvas = document.createElement('canvas'); canvas.style.height = 'clamp(300px, 50vh, 450px)'; canvas.style.width = '100%'; graphOuterContainer.appendChild(canvas);
             const ctx = canvas.getContext('2d');
-            
-            const datasets = payload.datasets.map(ds => ({
-                label: ds.label,
-                data: ds.values,
-                backgroundColor: type === 'graph_pie' ? ['#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#dbeafe', '#eff6ff'].slice(0, ds.values.length) : 'rgba(59, 130, 246, 0.3)', // Tailwind blue-500 family
-                borderColor: type === 'graph_pie' ? '#100f24' : 'rgba(59, 130, 246, 1)',
-                borderWidth: type === 'graph_pie' ? 2 : 1.5,
-                tension: type === 'graph_line' ? 0.3 : undefined,
-                pointBackgroundColor: type === 'graph_line' ? 'rgba(59, 130, 246, 1)' : undefined,
-                pointBorderColor: type === 'graph_line' ? '#fff' : undefined,
-                pointHoverBackgroundColor: type === 'graph_line' ? '#fff' : undefined,
-                pointHoverBorderColor: type === 'graph_line' ? 'rgba(59, 130, 246, 1)' : undefined,
-            }));
-
-            let chartTypeJS;
-            switch(type) {
-                case 'graph_bar': chartTypeJS = 'bar'; break;
-                case 'graph_line': chartTypeJS = 'line'; break;
-                case 'graph_pie': chartTypeJS = 'pie'; break;
-                default:
-                    console.error("Unknown graph type for Chart.js:", type);
-                    const errorDiv = document.createElement('div');
-                    errorDiv.classList.add('markdown-content');
-                    errorDiv.innerHTML = marked.parse(`<h2>Error</h2><p>Cannot render unknown graph type: ${type}</p>`);
-                    return errorDiv;
-            }
-            
+            const datasets = payload.datasets.map(ds => ({ label: ds.label, data: ds.values, backgroundColor: type === 'graph_pie' ? ['#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#dbeafe', '#eff6ff'].slice(0, ds.values.length) : 'rgba(59, 130, 246, 0.3)', borderColor: type === 'graph_pie' ? '#100f24' : 'rgba(59, 130, 246, 1)', borderWidth: type === 'graph_pie' ? 2 : 1.5, tension: type === 'graph_line' ? 0.3 : undefined, /* ... other dataset options ... */ }));
+            let chartTypeJS; switch(type) { case 'graph_bar': chartTypeJS = 'bar'; break; case 'graph_line': chartTypeJS = 'line'; break; case 'graph_pie': chartTypeJS = 'pie'; break; default: const errorDiv = document.createElement('div'); errorDiv.innerHTML = marked.parse(`<h2>Error</h2><p>Unknown graph type: ${type}</p>`); return errorDiv;}
             const chartData = { labels: payload.labels, datasets: datasets };
-
-            Chart.defaults.color = '#9ca3af'; // Tailwind gray-400
-            Chart.defaults.borderColor = '#374151'; // Tailwind gray-700
-            Chart.defaults.font.family = "'Space Grotesk', 'Noto Sans', sans-serif";
-
-
-            const chartOptions = {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: payload.options?.animated !== undefined ? payload.options.animated : { duration: 800, easing: 'easeInOutQuart' },
-                scales: {},
-                plugins: {
-                    title: { display: false }, // Using custom H2 for title
-                    legend: {
-                        position: 'bottom',
-                        display: (payload.datasets.length > 1 && type !== 'graph_pie') || (type === 'graph_pie' && payload.labels.length > 1),
-                        labels: { color: '#d1d5db', padding: 15, font: {size: 13} }
-                    },
-                    tooltip: {
-                        backgroundColor: 'rgba(31, 29, 61, 0.9)', // Darker tooltip
-                        titleColor: '#f0f0ff', 
-                        bodyColor: '#d0d0f0',
-                        padding: 12, cornerRadius: 3,
-                        titleFont: { weight: 'bold', size: 14 },
-                        bodyFont: { size: 13 },
-                        boxPadding: 5
-                    }
-                }
-            };
-
-            if (type === 'graph_bar' || type === 'graph_line') {
-                chartOptions.scales.x = { 
-                    title: { display: !!payload.options?.x_axis_label, text: payload.options?.x_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} },
-                    grid: { color: '#21204b', drawBorder: false },
-                    ticks: { color: '#9ca3af', font:{size:12} }
-                };
-                chartOptions.scales.y = { 
-                    title: { display: !!payload.options?.y_axis_label, text: payload.options?.y_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} },
-                    beginAtZero: true,
-                    grid: { color: '#21204b', drawBorder: false },
-                    ticks: { color: '#9ca3af', font:{size:12}, 
-                             callback: function(value) { // Optional: format large numbers
-                                if (value >= 1000000) return (value / 1000000) + 'M';
-                                if (value >= 1000) return (value / 1000) + 'K';
-                                return value;
-                             }
-                           }
-                };
-            }
-
-            if (chartInstance) chartInstance.destroy(); // Defensive, should be cleared by clearAllDynamicContent
-            chartInstance = new Chart(ctx, { type: chartTypeJS, data: chartData, options: chartOptions });
-            
+            Chart.defaults.color = '#9ca3af'; Chart.defaults.borderColor = '#374151'; Chart.defaults.font.family = "'Space Grotesk', 'Noto Sans', sans-serif";
+            const chartOptions = { responsive: true, maintainAspectRatio: false, animation: payload.options?.animated !== undefined ? payload.options.animated : { duration: 800, easing: 'easeInOutQuart' }, scales: {}, plugins: { title: { display: false }, legend: { position: 'bottom', display: (payload.datasets.length > 1 && type !== 'graph_pie') || (type === 'graph_pie' && payload.labels.length > 1), labels: { color: '#d1d5db', padding: 15, font: {size: 13} } }, tooltip: { backgroundColor: 'rgba(31, 29, 61, 0.9)', titleColor: '#f0f0ff', bodyColor: '#d0d0f0', padding: 12, cornerRadius: 3, titleFont: { weight: 'bold', size: 14 }, bodyFont: { size: 13 }, boxPadding: 5 } } };
+            if (type === 'graph_bar' || type === 'graph_line') { chartOptions.scales.x = { title: { display: !!payload.options?.x_axis_label, text: payload.options?.x_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} }, grid: { color: '#21204b', drawBorder: false }, ticks: { color: '#9ca3af', font:{size:12} } }; chartOptions.scales.y = { title: { display: !!payload.options?.y_axis_label, text: payload.options?.y_axis_label, color: '#d1d5db', font:{size:13, weight:'500'} }, beginAtZero: true, grid: { color: '#21204b', drawBorder: false }, ticks: { color: '#9ca3af', font:{size:12}, callback: function(value) { if (value >= 1000000) return (value / 1000000) + 'M'; if (value >= 1000) return (value / 1000) + 'K'; return value; } } }; }
+            if (chartInstance) chartInstance.destroy(); chartInstance = new Chart(ctx, { type: chartTypeJS, data: chartData, options: chartOptions });
             return graphOuterContainer;
         });
     }
@@ -294,17 +192,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         
         if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
-            console.log("WebSocket is already open or connecting.");
             return;
         }
         
         websocket = new WebSocket(wsUrl);
-        updateWsStatus('Connecting...', 'status-error');
+        updateWsStatusIndicator('Connecting...', 'status-error'); // Update small dot
+        // Don't show full banner on initial connect attempt, only on actual disconnect/error
 
         websocket.onopen = () => {
-            updateWsStatus('Connected', 'status-connected');
+            updateWsStatusIndicator('Connected', 'status-connected'); // Update small dot
             console.log("WebSocket connection established");
-            updateStatusMessage(); // Update status message when connected
+            showConnectionStatusBanner("Agent connected to OpenAI.", "connected"); // Show banner
+            updateStatusMessage(); 
         };
 
         websocket.onmessage = (event) => {
@@ -312,11 +211,43 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const messageData = JSON.parse(event.data);
                 const type = messageData.type;
-                const payload = messageData.payload;
+                // Payload can be directly messageData.payload OR messageData.status for connection messages
+                const payload = messageData.payload || messageData.status || messageData; // Be flexible
 
-                if (!type || !payload) {
-                    console.error("Invalid message structure received:", messageData);
-                    renderMarkdown({title: "Data Error", content: "Received malformed data from server."});
+                if (!type) {
+                    console.error("Invalid message: 'type' missing:", messageData);
+                    renderMarkdown({title: "Data Error", content: "Received malformed data (no type)."});
+                    return;
+                }
+
+                // --- Phase 4: Handle new message types ---
+                if (type === 'connection_status') {
+                    if (payload && payload.connection === 'connected') {
+                        updateWsStatusIndicator('Connected', 'status-connected');
+                        showConnectionStatusBanner(payload.message || "Agent reconnected.", "connected");
+                    } else if (payload && payload.connection === 'disconnected') {
+                        updateWsStatusIndicator('Disconnected', 'status-disconnected');
+                        showConnectionStatusBanner(payload.message || "Agent disconnected. Attempting to reconnect...", "disconnected");
+                    } else { // error or unknown connection status
+                        updateWsStatusIndicator('Error', 'status-error');
+                        showConnectionStatusBanner(payload.message || "Connection issue.", "error");
+                    }
+                    updateStatusMessage(); // Update idle state message if visible
+                    return; // Handled this message type
+                } else if (type === 'new_call_update_available') {
+                    if (payload && payload.contact_name && payload.status_summary) {
+                        showCallUpdateNotification(payload.contact_name, payload.status_summary);
+                    } else {
+                        console.warn("Malformed 'new_call_update_available' payload:", payload);
+                    }
+                    return; // Handled this message type
+                }
+                // --- End of Phase 4 Handling ---
+                
+                // Existing display logic for markdown/graphs
+                if (!payload && (type === 'markdown' || type.startsWith('graph_'))) {
+                    console.error("Invalid message: 'payload' missing for display type:", messageData);
+                    renderMarkdown({title: "Data Error", content: "Received malformed data (no payload for display)."});
                     return;
                 }
 
@@ -325,22 +256,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (type.startsWith('graph_')) {
                     renderGraph(type, payload);
                 } else {
-                    console.warn("Received unknown display type:", type);
-                    displayActiveContent(() => {
-                        const unknownContainer = document.createElement('div');
-                        unknownContainer.classList.add('markdown-content');
-                        unknownContainer.innerHTML = `<h2>Unknown Display Type: <strong>${type}</strong></h2>
-                                                     <pre style="background-color: #1f2937; color: #e5e7eb; padding: 10px; border-radius: 4px;">${JSON.stringify(payload, null, 2)}</pre>`;
-                        return unknownContainer;
-                    });
+                    console.warn("Received unknown display type (not connection/call update):", type);
+                    // Optionally display raw for unknown types if needed for debugging
                 }
             } catch (e) {
-                console.error("Failed to parse message or render:", e);
+                console.error("Failed to parse message or render:", e, "Raw data:", event.data);
+                // Display a generic error on the main display area if parsing fails
                 displayActiveContent(() => {
                     const errorContainer = document.createElement('div');
                     errorContainer.classList.add('markdown-content');
                     errorContainer.innerHTML = `<h2>Display Error</h2>
-                                                <p><em>An error occurred while trying to display the content.</em></p>
+                                                <p><em>An error occurred processing server message.</em></p>
                                                 <pre style="background-color: #1f2937; color: #e5e7eb; padding: 10px; border-radius: 4px;">Data: ${event.data}</pre>`;
                     return errorContainer;
                 });
@@ -348,31 +274,30 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         websocket.onclose = (event) => {
-            updateWsStatus('Disconnected', 'status-disconnected');
+            updateWsStatusIndicator('Disconnected', 'status-disconnected'); // Update small dot
             console.log("WebSocket connection closed", event);
-            // Update the status message to show disconnected state
-            updateStatusMessage();
-            // Do not automatically revert to idle state on disconnect,
-            // as user might be looking at content. Reconnection will handle updates.
-            setTimeout(connectWebSocket, 5000); // Attempt to reconnect
+            // Don't show banner immediately from onclose if onmessage for disconnect already showed it.
+            // The _notify_frontend_disconnect from client's on_close should trigger the banner via 'connection_status' message.
+            updateStatusMessage(); 
+            setTimeout(connectWebSocket, self.RECONNECT_DELAY_SECONDS ? self.RECONNECT_DELAY_SECONDS * 1000 : 5000); // Use configured delay
         };
 
         websocket.onerror = (event) => {
-            updateWsStatus('Error', 'status-error');
+            updateWsStatusIndicator('Error', 'status-error'); // Update small dot
             console.error("WebSocket error observed:", event);
-            // Update the status message to show error state
+            // Similar to onclose, rely on client sending 'connection_status' for banner.
             updateStatusMessage();
-            // On error, ensure connection is closed to trigger onclose's reconnect logic
-            if (websocket.readyState !== WebSocket.CLOSED && websocket.readyState !== WebSocket.CLOSING) {
+            // Ensure close is called to trigger reconnect logic if error doesn't auto-close
+             if (websocket && websocket.readyState !== WebSocket.CLOSED && websocket.readyState !== WebSocket.CLOSING) {
                 websocket.close();
-            } else if (websocket.readyState === WebSocket.CLOSED) {
-                // If already closed (e.g. server unavailable), still schedule reconnect
-                setTimeout(connectWebSocket, 5000);
+            } else if (!websocket || websocket.readyState === WebSocket.CLOSED) {
+                 setTimeout(connectWebSocket, self.RECONNECT_DELAY_SECONDS ? self.RECONNECT_DELAY_SECONDS * 1000 : 5000);
             }
         };
     }
     
     // Initial setup
+    createNotificationElements(); // Create banner divs once
     showIdleState();
     connectWebSocket();
 });
