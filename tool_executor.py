@@ -3,6 +3,7 @@ import json
 import os
 import requests # For synchronous HTTP requests
 from datetime import datetime
+import sqlite3 # For database operations
 
 # Import tool names from tools_definition
 from tools_definition import (
@@ -260,8 +261,12 @@ def handle_get_taxi_ideas_for_today(current_date: str, config: dict, specific_fo
     if specific_focus:
         user_prompt_for_gemini += f" Pay special attention to: {specific_focus}."
     
-    _tool_log(f"Calling Gemini for taxi ideas. User prompt (effective): '{user_prompt_for_gemini}'. System prompt (snippet): '{system_instruction_for_taxi_ideas[:100]}...'")
-    
+    try:
+        cursor = conn.cursor()
+        _tool_log(f"Executing status check query: {full_query} with params: {params}")
+        cursor.execute(full_query, tuple(params))
+        jobs = cursor.fetchall()
+
     # We expect Gemini to use its internal Google Search tool based on the system prompt.
     response_text = get_gemini_response(
         user_prompt_text=user_prompt_for_gemini,
@@ -305,7 +310,5 @@ TOOL_HANDLERS = {
     GET_BOLT_KB_TOOL_NAME: handle_get_bolt_knowledge_base_info,
     GET_DTC_KB_TOOL_NAME: handle_get_dtc_knowledge_base_info,
     DISPLAY_ON_INTERFACE_TOOL_NAME: handle_display_on_interface,
-    # New handlers
-    GET_TAXI_IDEAS_FOR_TODAY_TOOL_NAME: handle_get_taxi_ideas_for_today,
     GENERAL_GOOGLE_SEARCH_TOOL_NAME: handle_general_google_search
 }
