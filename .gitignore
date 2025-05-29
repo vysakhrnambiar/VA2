@@ -25,6 +25,8 @@ ENV/
 # Logs
 *.log
 
+*.wav
+
 # OS specific files
 .DS_Store
 Thumbs.db

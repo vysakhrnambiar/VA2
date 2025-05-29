@@ -89,13 +89,13 @@ def _setup_file_logger(): # Unchanged
         logger = None
 _setup_file_logger()
 
-def log(msg, level=logging.INFO): # Added level parameter
+def log(msg, level=logging.INFO, **kwargs): # Modified to accept **kwargs
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
     level_name = logging.getLevelName(level)
     print(f"[{level_name}] [MAIN_APP] {timestamp} {msg}")
     global logger
     if logger is not None:
-        try: logger.log(level, msg) # Use logger.log for dynamic level
+        try: logger.log(level, msg, **kwargs) # Pass **kwargs to logger.log
         except Exception as e: print(f"ERROR: Could not write to log file: {e}")
 
 def log_section(title): # Unchanged
@@ -176,27 +176,31 @@ player_instance = None # PCMPlayer class and get_input_stream unchanged
 # ... (same as before) ...
 class PCMPlayer:
     def __init__(self, rate=OUTPUT_RATE, channels=CHANNELS, format_player=FORMAT, chunk_samples_player=OUTPUT_PLAYER_CHUNK_SAMPLES):
-        self.stream = None; self.buffer = b""; self.chunk_bytes = chunk_samples_player * pyaudio.get_sample_size(format_player) * channels
-        try: self.stream = p.open(format=format_player, channels=channels, rate=rate, output=True, frames_per_buffer=chunk_samples_player)
-        except Exception as e: log(f"CRITICAL ERROR PCMPlayer init: {e}", logging.CRITICAL); raise
-    def play(self, pcm_bytes): 
-        if not self.stream: return; self.buffer += pcm_bytes
+        log(f"PCMPlayer Init: Rate={rate}, ChunkSamples={chunk_samples_player}")
+        self.stream = None
+        try:
+            self.stream = p.open(format=format_player, channels=channels, rate=rate, output=True, frames_per_buffer=chunk_samples_player)
+        except Exception as e_pyaudio: log(f"CRITICAL ERROR initializing PyAudio output stream: {e_pyaudio}"); raise
+        self.buffer = b""; self.chunk_bytes = chunk_samples_player * pyaudio.get_sample_size(format_player) * channels
+    def play(self, pcm_bytes):
+        if not self.stream: return
+        self.buffer += pcm_bytes
         while len(self.buffer) >= self.chunk_bytes:
             try: self.stream.write(self.buffer[:self.chunk_bytes]); self.buffer = self.buffer[self.chunk_bytes:]
-            except IOError: self.close(); break
+            except IOError as e: log(f"PCMPlayer IOError during write: {e}. Stream might be closed."); self.close(); break
     def flush(self):
         if not self.stream or not self.buffer: return
         try: self.stream.write(self.buffer)
-        except IOError: self.close()
+        except IOError as e: log(f"PCMPlayer IOError during flush: {e}."); self.close()
         finally: self.buffer = b""
-    def clear(self): self.buffer = b""; log("PCMPlayer: Buffer cleared.")
+    def clear(self): self.buffer = b""; log("PCMPlayer: Buffer cleared for barge-in.")
     def close(self):
         if self.stream:
             try:
                 if self.stream.is_active(): self.stream.stop_stream()
-                while not self.stream.is_stopped(): time.sleep(0.01) # Ensure stream stops
+                while not self.stream.is_stopped(): time.sleep(0.01)
                 self.stream.close()
-            except Exception as e_close: log(f"PCMPlayer error during close: {e_close}", logging.WARNING)
+            except Exception as e_close: log(f"PCMPlayer error during close: {e_close}")
             finally: self.stream = None; log("PCMPlayer stream closed by main_app.")
 def get_input_stream():
     try: return p.open(format=FORMAT, channels=CHANNELS, rate=INPUT_RATE, input=True, frames_per_buffer=INPUT_CHUNK_SAMPLES)
@@ -229,11 +233,15 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
 
     try:
         while True:
-            if not openai_client_ref.connected: 
-                time.sleep(0.2) 
+            if not openai_client_ref.connected:
+                time.sleep(0.2)
                 if not (hasattr(openai_client_ref, 'keep_outer_loop_running') and openai_client_ref.keep_outer_loop_running):
                     log("OpenAI client's main loop seems stopped. Exiting audio pipeline.", logging.INFO); break
                 continue
+            
+            # Get current state at beginning of loop iteration
+            current_pipeline_app_state_iter = get_app_state_main()
+            
             # --- Mic Read and VAD/WW/OpenAI Send Logic (as before) ---
             raw_audio_bytes_24k = b''
             try: 
@@ -248,12 +256,59 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
             if wf_raw: wf_raw.writeframes(raw_audio_bytes_24k)
             if wf_processed: wf_processed.writeframes(raw_audio_bytes_24k) # Assuming raw for processed for now
 
-            # VAD Logic (simplified for brevity, assume full logic from your file)
-            # ...
-            # WW Logic (simplified for brevity, assume full logic from your file)
-            # ...
+            # --- Local VAD for Barge-in ---
+            if local_interrupt_cooldown_frames_remaining > 0:
+                local_interrupt_cooldown_frames_remaining -=1
+            elif LOCAL_VAD_ENABLED and WEBRTC_VAD_AVAILABLE and SCIPY_AVAILABLE and \
+                 current_pipeline_app_state_iter == STATE_SENDING_TO_OPENAI and openai_client_ref.is_assistant_speaking() and \
+                 openai_client_ref.get_current_assistant_speech_duration_ms() > LOCAL_VAD_ACTIVATION_THRESHOLD_MS:
+                try:
+                    audio_np_24k = np.frombuffer(raw_audio_bytes_24k, dtype=np.int16)
+                    num_samples_16k = int(len(audio_np_24k) * VAD_SAMPLE_RATE / INPUT_RATE)
+                    if num_samples_16k > 0:
+                        audio_np_16k_float = signal.resample(audio_np_24k.astype(np.float32), num_samples_16k)
+                        audio_np_16k_scaled = (audio_np_16k_float.astype(np.int16) * 0.20).astype(np.int16)  # VAD_VOLUME_REDUCTION_FACTOR = 0.20
+                        vad_chunk = audio_np_16k_scaled.tobytes()
+                        # Ensure vad_chunk is exactly VAD_BYTES_PER_FRAME
+                        if len(vad_chunk) > VAD_BYTES_PER_FRAME: vad_chunk = vad_chunk[:VAD_BYTES_PER_FRAME]
+                        elif len(vad_chunk) < VAD_BYTES_PER_FRAME and len(vad_chunk) > 0 : vad_chunk += b'\x00' * (VAD_BYTES_PER_FRAME - len(vad_chunk))
+                        
+                        if len(vad_chunk) == VAD_BYTES_PER_FRAME and is_speech_detected_by_webrtc_vad(vad_chunk):
+                            local_vad_speech_frames_count += 1; local_vad_silence_frames_after_speech = 0
+                            if local_vad_speech_frames_count >= MIN_SPEECH_FRAMES_FOR_LOCAL_INTERRUPT:
+                                log(f"LOCAL_VAD: User speech INTERRUPT detected.", logging.DEBUG)
+                                openai_client_ref.handle_local_user_speech_interrupt()
+                                local_interrupt_cooldown_frames_remaining = LOCAL_INTERRUPT_COOLDOWN_FRAMES
+                                local_vad_speech_frames_count = 0
+                        elif local_vad_speech_frames_count > 0: # Speech was detected, now silence
+                            local_vad_silence_frames_after_speech += 1
+                            if local_vad_silence_frames_after_speech >= MIN_SILENCE_FRAMES_TO_RESET_LOCAL_VAD_STATE:
+                                local_vad_speech_frames_count = 0; local_vad_silence_frames_after_speech = 0
+                except Exception as e_vad_proc: log(f"Error in local VAD processing: {e_vad_proc}", logging.WARNING)
+            else: # Reset if not in VAD check conditions
+                local_vad_speech_frames_count = 0; local_vad_silence_frames_after_speech = 0
 
-            if get_app_state_main() == STATE_SENDING_TO_OPENAI and raw_audio_bytes_24k:
+            # --- Wake Word Detection ---
+            if current_pipeline_app_state_iter == STATE_LISTENING_FOR_WAKEWORD and wake_word_active:
+                audio_for_ww = b''
+                if SCIPY_AVAILABLE:
+                    try:
+                        audio_np_24k_ww = np.frombuffer(raw_audio_bytes_24k, dtype=np.int16)
+                        num_samples_16k_ww = int(len(audio_np_24k_ww) * WAKE_WORD_PROCESS_RATE / INPUT_RATE)
+                        if num_samples_16k_ww > 0:
+                            audio_np_16k_ww_float = signal.resample(audio_np_24k_ww.astype(np.float32), num_samples_16k_ww)
+                            audio_for_ww = audio_np_16k_ww_float.astype(np.int16).tobytes()
+                    except Exception as e_ww_resample: log(f"Error resampling for WW: {e_ww_resample}", logging.WARNING)
+                elif INPUT_RATE == WAKE_WORD_PROCESS_RATE: # No resampling needed if rates match
+                    audio_for_ww = raw_audio_bytes_24k
+                
+                if audio_for_ww and wake_word_detector_instance.process_audio(audio_for_ww):
+                    log_section(f"WAKE WORD DETECTED: '{wake_word_detector_instance.wake_word_model_name.upper()}'!")
+                    set_app_state_main(STATE_SENDING_TO_OPENAI)
+                    if hasattr(wake_word_detector_instance, 'reset'): wake_word_detector_instance.reset()
+                    log("*** Wake word detected! Sending audio to OpenAI... ***", logging.INFO)
+
+            if current_pipeline_app_state_iter == STATE_SENDING_TO_OPENAI and raw_audio_bytes_24k:
                 if openai_client_ref.connected: # Send only if connected
                     audio_b64_str = base64.b64encode(raw_audio_bytes_24k).decode('utf-8')
                     audio_msg_to_send = {"type": "input_audio_buffer.append", "audio": audio_b64_str}
@@ -261,6 +316,8 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
                         if hasattr(openai_client_ref.ws_app, 'send'):
                             openai_client_ref.ws_app.send(json.dumps(audio_msg_to_send))
                             if state_just_changed_to_sending:
+                                # Directly use the string without any get() calls
+                                voice_to_use = "ash"  # Hardcoded for now to bypass any potential issues
                                 response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": APP_CONFIG.get("OPENAI_VOICE", "ash"), "output_audio_format": "pcm16"}}
                                 openai_client_ref.ws_app.send(json.dumps(response_create_payload))
                                 state_just_changed_to_sending = False
@@ -377,9 +434,13 @@ if __name__ == "__main__":
     log(f"Display API URL: {APP_CONFIG.get('FASTAPI_DISPLAY_API_URL', 'Not Set')}")
     log(f"UI Status Update URL: {APP_CONFIG.get('FASTAPI_UI_STATUS_UPDATE_URL', 'Not Set')}")
     log(f"Notify Call Update URL: {APP_CONFIG.get('FASTAPI_NOTIFY_CALL_UPDATE_URL', 'Not Set')}")
+    log(f"TSM Playback Speed: {APP_CONFIG.get('TSM_PLAYBACK_SPEED', '1.0')} (1.0 = TSM disabled, direct play)")
 
     ws_full_url = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL_ID}"
     auth_headers = ["Authorization: Bearer " + OPENAI_API_KEY, "OpenAI-Beta: realtime=v1"]
+    # Make sure OPENAI_VOICE is a string, not a complex object
+    APP_CONFIG["OPENAI_VOICE"] = APP_CONFIG.get("OPENAI_VOICE", "ash")
+    # Match exactly the format in working openai_client.py
     client_config = {**APP_CONFIG, "CHUNK_MS": CHUNK_MS, "USE_ULAW_FOR_OPENAI_INPUT": False }
 
     try:

@@ -94,26 +94,60 @@ class OpenAISpeechClient:
     def _log_section(self, title):
         self.log(f"\n===== [Client] {title} =====")
 
+
+
     def _process_and_play_audio(self, audio_data_bytes: bytes):
+        """
+        Buffers incoming audio, applies TSM with pytsmod.wsola if enabled, and sends to player.
+        """
         if not self.tsm_enabled:
-            if self.player: self.player.play(audio_data_bytes)
+            if self.player:
+                self.player.play(audio_data_bytes)
             return
+
         self.openai_audio_buffer_raw_bytes += audio_data_bytes
+
         while len(self.openai_audio_buffer_raw_bytes) >= self.TSM_PROCESSING_THRESHOLD_BYTES:
             segment_to_process_bytes = self.openai_audio_buffer_raw_bytes[:self.TSM_PROCESSING_THRESHOLD_BYTES]
             self.openai_audio_buffer_raw_bytes = self.openai_audio_buffer_raw_bytes[self.TSM_PROCESSING_THRESHOLD_BYTES:]
+
             try:
                 segment_np_int16 = np.frombuffer(segment_to_process_bytes, dtype=np.int16)
-                segment_np_float32 = segment_np_int16.astype(np.float32) / 32768.0
-                if segment_np_float32.size == 0: continue
-                stretched_audio_float32 = wsola(x=segment_np_float32, s=self.desired_playback_speed)
+                # pytsmod.wsola expects a 1D (for mono) or 2D (for multi-channel) float array.
+                # Normalizing to -1.0 to 1.0 is good practice.
+                segment_np_float32 = segment_np_int16.astype(np.float32) / 32768.0 
+                
+                if segment_np_float32.size == 0:
+                    continue 
+
+                # self.log(f"DEBUG_TSM: Input array shape to wsola: {segment_np_float32.shape}, SR: {self.openai_sample_rate}, Alpha: {self.desired_playback_speed}")
+                
+                # Perform time stretching using pytsmod.wsola
+                # x: input signal (1D or 2D NumPy array)
+                # alpha: ratio by which the length of the signal is changed ( > 1 for speedup)
+                # Fs: sample rate
+                self.log(f"Blocking call start ")
+                stretched_audio_float32 = wsola(
+                    x=segment_np_float32, 
+                    s=self.desired_playback_speed 
+                    #Fs=self.openai_sample_rate
+                )
+                self.log(f"BLocking call end.")
+                # self.log(f"DEBUG_TSM: Output array shape from wsola: {stretched_audio_float32.shape}")
+                
+                # Convert back to int16 bytes
                 clipped_stretched_audio = np.clip(stretched_audio_float32, -1.0, 1.0)
                 stretched_audio_int16 = (clipped_stretched_audio * 32767.0).astype(np.int16)
                 stretched_audio_bytes = stretched_audio_int16.tobytes()
-                if self.player and len(stretched_audio_bytes) > 0: self.player.play(stretched_audio_bytes)
+
+                if self.player and len(stretched_audio_bytes) > 0:
+                    self.player.play(stretched_audio_bytes)
+
             except Exception as e_tsm_proc:
-                self.log(f"ERROR TSM: {e_tsm_proc}. Playing raw.")
-                if self.player: self.player.play(segment_to_process_bytes)
+                self.log(f"ERROR during TSM processing with pytsmod.wsola: {e_tsm_proc}. Playing segment directly.")
+                if self.player: 
+                    self.player.play(segment_to_process_bytes) 
+
 
    # --- Phase 4: Frontend Notification Methods ---
     def _notify_frontend(self, payload: dict):
@@ -323,7 +357,7 @@ class OpenAISpeechClient:
             }
         }
         try:
-            ws.send(json.dumps(session_config))
+            self.ws_app.send(json.dumps(session_config))
             self.log(f"Client: Session config sent. Instructions length: {len(effective_instructions)} chars.")
             if informed_job_ids:
                 self._mark_call_updates_as_informed(informed_job_ids)
@@ -338,20 +372,25 @@ class OpenAISpeechClient:
         try:
             tool_result_str = handler_function(**parsed_args, config=config)
             tool_output_for_llm = str(tool_result_str)
-            if self.session_id: log_conversation_turn(self.session_id, "tool_result", json.dumps({"call_id": call_id, "name": function_name, "output_snippet": tool_output_for_llm[:100]}))
+            self.log(f"Client (Thread - {function_name}): Execution complete. Result snippet: '{tool_output_for_llm[:150]}...'")
         except Exception as e_tool_exec_thread:
-            self.log(f"Client ERROR (Thread - {function_name}): {e_tool_exec_thread}")
-            error_detail = f"Error in tool '{function_name}': {str(e_tool_exec_thread)[:200]}"
+            self.log(f"Client (Thread - {function_name}) ERROR: Exception during execution: {e_tool_exec_thread}")
+            error_detail = f"An error occurred while executing the tool '{function_name}': {str(e_tool_exec_thread)}"
             tool_output_for_llm = json.dumps({"error": error_detail})
-            if self.session_id: log_conversation_turn(self.session_id, "tool_result", json.dumps({"call_id": call_id, "name": function_name, "error": error_detail}))
-        
+            self.log(f"Client (Thread - {function_name}): Sending error back to LLM: {tool_output_for_llm}")
+
         tool_response_payload = {"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": tool_output_for_llm}}
         if self.ws_app and self.connected:
             try:
                 self.ws_app.send(json.dumps(tool_response_payload))
+                self.log(f"Client (Thread - {function_name}): Sent tool output for Call_ID='{call_id}'.")
                 response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": self.config.get("OPENAI_VOICE", "ash"), "output_audio_format": "pcm16"}}
                 self.ws_app.send(json.dumps(response_create_payload))
-            except Exception as e_send_tool_out: self.log(f"Client ERROR sending tool output for {call_id}: {e_send_tool_out}")
+                self.log(f"Client (Thread - {function_name}): Sent 'response.create' to trigger assistant after tool output for Call_ID='{call_id}'.")
+            except Exception as e_send_thread:
+                self.log(f"Client (Thread - {function_name}) ERROR: Could not send tool output or response.create for Call_ID='{call_id}': {e_send_thread}")
+        else:
+            self.log(f"Client (Thread - {function_name}) ERROR: WebSocket not available/connected. Cannot send tool output for Call_ID='{call_id}'.")
 
     def is_assistant_speaking(self) -> bool: return self.last_assistant_item_id is not None
     def get_current_assistant_speech_duration_ms(self) -> int:
@@ -372,88 +411,243 @@ class OpenAISpeechClient:
     def handle_local_user_speech_interrupt(self):
         if self.get_app_state() == "SENDING_TO_OPENAI": self._perform_truncation(reason_prefix="Local VAD")
 
+ 
     def on_message(self, ws, message_str):
         msg = json.loads(message_str)
         msg_type = msg.get("type")
-        # Conditional logging (same as before)
-        if msg_type == "session.created":
-            new_session_id = msg.get('session', {}).get('id')
-            if self.session_id != new_session_id: # Log only if session_id changes or is new
-                 self.session_id = new_session_id # CRITICAL: Update self.session_id here
-                 self.log(f"Client: OpenAI Session CREATED/UPDATED: ID={self.session_id}.")
-                 if self.session_id: log_conversation_turn(self.session_id, "system_event", json.dumps({"event": "session.created", "details": msg.get('session', {})}))
-            # UI print unchanged
 
-        elif msg_type == "conversation.item.created":
+        if msg_type not in ["response.audio.delta", "response.audio_transcript.delta", 
+                            "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
+                            "response.output.delta", "response.function_call_arguments.delta"]:
+            log_content = json.dumps(msg, indent=2) if len(message_str) < 500 else str(msg)[:500] + "..."
+            self.log(f"Client RAW_MSG TYPE: {msg_type} | CONTENT_SNIPPET: {log_content}")
+
+        if msg_type == "conversation.item.created":
             item = msg.get("item", {})
-            if item.get("role") == "assistant" and item.get("type") == "message" and item.get("status") == "in_progress":
-                if self.last_assistant_item_id != item.get("id"):
-                    self.last_assistant_item_id = item.get("id"); self.current_assistant_item_played_ms = 0
-                    self.current_assistant_text_response = ""
-
+            item_id, item_role, item_type, item_status = item.get("id"), item.get("role"), item.get("type"), item.get("status")
+            if item_role == "assistant" and item_type == "message" and item_status == "in_progress":
+                if self.last_assistant_item_id != item_id: 
+                    self.log(f"Client: New assistant message item starting. ID: {item_id}. Resetting played duration.")
+                    self.last_assistant_item_id = item_id
+                    self.current_assistant_item_played_ms = 0
+        
         elif msg_type == "response.output.delta":
-            delta = msg.get("delta", {})
-            if "text" in delta: self.current_assistant_text_response += delta["text"]
-            if "tool_calls" in delta:
-                for tc in delta["tool_calls"]:
-                    if "id" in tc and "function" in tc and "arguments" in tc["function"]:
-                        self.accumulated_tool_args[tc["id"]] = self.accumulated_tool_args.get(tc["id"], "") + tc["function"]["arguments"]
+            delta_content = msg.get("delta", {}).get("tool_calls", [])
+            for tc_obj in delta_content:
+                if isinstance(tc_obj, dict):
+                    call_id, fn_name = tc_obj.get("id"), tc_obj.get('function',{}).get('name')
+                    fn_args_partial = tc_obj.get('function',{}).get('arguments',"")
+                    if call_id and fn_name: 
+                        self.accumulated_tool_args[call_id] = self.accumulated_tool_args.get(call_id, "") + fn_args_partial
         
         elif msg_type == "response.function_call_arguments.delta":
-            call_id, delta_args = msg.get("call_id"), msg.get("delta", "")
+            call_id, delta_args = msg.get("call_id"), msg.get("delta", "") 
             if call_id: self.accumulated_tool_args[call_id] = self.accumulated_tool_args.get(call_id, "") + delta_args
-            
+
         elif msg_type == "response.function_call_arguments.done":
-            call_id = msg.get("call_id"); name = msg.get("name")
-            args_str = self.accumulated_tool_args.pop(call_id, msg.get("arguments", "{}"))
-            if self.session_id: log_conversation_turn(self.session_id, "tool_call", json.dumps({"call_id": call_id, "name": name, "arguments": args_str}))
-            try: parsed_args = json.loads(args_str if args_str else "{}")
-            except: parsed_args = {}; self.log(f"WARN: Bad JSON args for {name}: {args_str}") # Handle error to LLM
-            if name == END_CONVERSATION_TOOL_NAME: # Simplified
-                self.last_assistant_item_id = None; self.current_assistant_item_played_ms = 0; return
-            elif name in TOOL_HANDLERS:
-                threading.Thread(target=self._execute_tool_in_thread, args=(TOOL_HANDLERS[name], parsed_args, call_id, self.config, name), daemon=True).start()
-            return
+            call_id = msg.get("call_id")
+            function_to_execute_name = msg.get("name") 
+            final_args_str_from_event = msg.get("arguments", "{}")
+            final_accumulated_args = self.accumulated_tool_args.pop(call_id, "{}") 
+            final_args_to_use = final_args_str_from_event if (final_args_str_from_event and final_args_str_from_event != "{}") else final_accumulated_args
+            
+            if not function_to_execute_name:
+                self.log(f"Client WARN: 'function_call_arguments.done' for Call_ID='{call_id}' missing function name. Args='{final_args_to_use}'.")
+                return
 
-        elif msg_type == "response.audio_transcript.done":
-            text = msg.get("transcript", {}).get("text", "")
-            if text and self.session_id: log_conversation_turn(self.session_id, "user", text)
+            self.log(f"Client: Function Call Finalized by LLM: Name='{function_to_execute_name}', Call_ID='{call_id}', Args='{final_args_to_use}'")
+            parsed_args = {}
+            try:
+                if final_args_to_use: parsed_args = json.loads(final_args_to_use) 
+            except json.JSONDecodeError as e:
+                self.log(f"Client WARN: Could not decode JSON arguments for {function_to_execute_name}: '{final_args_to_use}'. Error: {e}")
+                error_detail_for_llm = f"Invalid JSON arguments for tool {function_to_execute_name}. Error: {str(e)}"
+                error_output_for_llm = json.dumps({"error": error_detail_for_llm })
+                error_result_payload = {"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": error_output_for_llm }}
+                try:
+                    if self.ws_app and self.connected:
+                        ws.send(json.dumps(error_result_payload))
+                        ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": self.config.get("OPENAI_VOICE", "ash")}}))
+                except Exception as e_send_err: self.log(f"Client ERROR sending arg parsing error: {e_send_err}")
+                return 
 
-        elif msg_type == "response.audio.delta": # Play audio, track duration
-            # ... same as before ...
-            audio_data_b64 = msg.get("delta"); item_id = msg.get("item_id")
-            if item_id and item_id in self.client_initiated_truncated_item_ids: return
-            if audio_data_b64:
-                self._process_and_play_audio(base64.b64decode(audio_data_b64))
-                if self.last_assistant_item_id == item_id: self.current_assistant_item_played_ms += self.client_audio_chunk_duration_ms
-                
-        elif msg_type == "response.audio.done": # Log full assistant text
-            if self.player: self.player.flush()
-            if self.current_assistant_text_response and self.session_id:
-                log_conversation_turn(self.session_id, "assistant", self.current_assistant_text_response)
-            self.current_assistant_text_response = "" # Reset
-            # UI print unchanged
+            if function_to_execute_name == END_CONVERSATION_TOOL_NAME:
+                reason = parsed_args.get("reason", "No reason specified by LLM.")
+                self.log(f"Client: LLM requests '{END_CONVERSATION_TOOL_NAME}'. Reason: '{reason}'.")
+                end_conv_delay_s = self.config.get("END_CONV_AUDIO_FINISH_DELAY_S", 2.0)
+                if self.player and (len(self.player.buffer) > 0 or self.last_assistant_item_id):
+                    self.log(f"Client (End_Conv): Player might have audio. Waiting {end_conv_delay_s}s...")
+                    time.sleep(end_conv_delay_s) 
+                else:
+                    time.sleep(0.2) 
+                self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' (after delay) for reason: '{reason}'.")
+                if self.wake_word_active: 
+                    if self.player: self.player.clear(); self.player.flush() 
+                    self.set_app_state("LISTENING_FOR_WAKEWORD") 
+                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) ***\n")
+                else: 
+                    if self.player: self.player.flush()
+                    print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query. ***\n")
+                self.last_assistant_item_id = None 
+                self.current_assistant_item_played_ms = 0
+                return
+
+            elif function_to_execute_name in TOOL_HANDLERS:
+                handler_function = TOOL_HANDLERS[function_to_execute_name]
+                tool_thread = threading.Thread(target=self._execute_tool_in_thread, args=(handler_function, parsed_args, call_id, self.config, function_to_execute_name), daemon=True)
+                tool_thread.start()
+                return 
+            else: 
+                self.log(f"Client WARN: No handler for function '{function_to_execute_name}'. Call_ID='{call_id}'.")
+                unhandled_error_out = json.dumps({"error": f"Tool '{function_to_execute_name}' not implemented by client."})
+                error_payload = {"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": unhandled_error_out}}
+                try:
+                    if self.ws_app and self.connected:
+                        ws.send(json.dumps(error_payload))
+                        ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": self.config.get("OPENAI_VOICE", "ash")}}))
+                except Exception as e_send_unhandled: self.log(f"Client ERROR sending unhandled tool error: {e_send_unhandled}")
+                return
+
+        elif msg_type == "session.created":
+            self.session_id = msg.get('session', {}).get('id')
+            expires_at_ts = msg.get('session', {}).get('expires_at', 0)
+            self.log(f"Client: OpenAI Session created: {self.session_id}, Expires At (Unix): {expires_at_ts}")
+            if expires_at_ts > 0:
+                try: self.log(f"Client: Session expiry datetime: {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(expires_at_ts))}")
+                except: self.log("Client: Could not parse session expiry to datetime.")
+            turn_detection_settings = msg.get('session', {}).get('turn_detection', {})
+            self.log(f"Client: Server turn_detection settings: {json.dumps(turn_detection_settings)}")
+            if self.get_app_state() == "LISTENING_FOR_WAKEWORD" and self.wake_word_active:
+                 print(f"\n*** CLIENT: Listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' ***\n")
+            else:
+                 print(f"\n*** CLIENT: Speak now to interact with OpenAI (WW inactive or sending mode). ***\n")
+
+        elif msg_type == "response.audio.delta":
+            audio_data_b64 = msg.get("delta")
+            item_id_of_delta = msg.get("item_id") 
+            self.log("Client: response.audio.delta receieved")
+            if item_id_of_delta and item_id_of_delta in self.client_initiated_truncated_item_ids:
+                pass
+            elif audio_data_b64:
+                audio_data_bytes = base64.b64decode(audio_data_b64)
+                self._process_and_play_audio(audio_data_bytes) 
+                if self.last_assistant_item_id and self.last_assistant_item_id == item_id_of_delta:
+                    self.current_assistant_item_played_ms += self.client_audio_chunk_duration_ms
         
-        elif msg_type == "response.output_item.done": # Clear tracking if current item done
-            item_id_done = msg.get("item", {}).get("id")
-            if self.last_assistant_item_id == item_id_done:
-                self.last_assistant_item_id = None; self.current_assistant_item_played_ms = 0
+        elif msg_type == "response.audio.done":
+            self.log("Client: OpenAI Audio reply 'done' received.")
+            if self.tsm_enabled:
+                if len(self.openai_audio_buffer_raw_bytes) > 0:
+                    self.log(f"Client (audio.done): Processing {len(self.openai_audio_buffer_raw_bytes)} remaining bytes with pytsmod.wsola.")
+                    final_segment_to_process_bytes_for_fallback = self.openai_audio_buffer_raw_bytes 
+                    try:
+                        final_segment_bytes = self.openai_audio_buffer_raw_bytes
+                        self.openai_audio_buffer_raw_bytes = b'' 
+                        segment_np_int16 = np.frombuffer(final_segment_bytes, dtype=np.int16)
+                        segment_np_float32 = segment_np_int16.astype(np.float32) / 32768.0
+                        if segment_np_float32.size > 0:
+                            stretched_audio_float32 = wsola(segment_np_float32, s=self.desired_playback_speed) # <--- CORRECTED: use 's'
+                            clipped_stretched_audio = np.clip(stretched_audio_float32, -1.0, 1.0)
+                            stretched_audio_int16 = (clipped_stretched_audio * 32767.0).astype(np.int16)
+                            stretched_audio_bytes = stretched_audio_int16.tobytes()
+                            if self.player and len(stretched_audio_bytes) > 0:
+                                self.player.play(stretched_audio_bytes)
+                    except Exception as e_tsm_flush_proc:
+                        self.log(f"ERROR during TSM final processing (pytsmod.wsola) on audio.done: {e_tsm_flush_proc}. Playing raw if any.")
+                        if self.player and final_segment_to_process_bytes_for_fallback and len(final_segment_to_process_bytes_for_fallback) > 0:
+                           self.player.play(final_segment_to_process_bytes_for_fallback)
+            else: 
+                if len(self.openai_audio_buffer_raw_bytes) > 0 and self.player:
+                    self.player.play(self.openai_audio_buffer_raw_bytes)
+                    self.openai_audio_buffer_raw_bytes = b''
+            if self.player: self.player.flush() 
+            self.log(f"Client: Audio done. Current app state: {self.get_app_state()}.")
+            if not (self.get_app_state() == "LISTENING_FOR_WAKEWORD" and self.wake_word_active):
+                print(f"\n*** Assistant has finished speaking. Ready for your next query. (Ctrl+C to exit) ***\n")
+
+        elif msg_type == "response.output_item.done":
+            item_done = msg.get("item", {})
+            item_id_done = item_done.get("id")
+            if self.last_assistant_item_id and self.last_assistant_item_id == item_id_done:
+                self.log(f"Client: Current assistant message item {item_id_done} is now fully done. Clearing tracking.")
+                self.last_assistant_item_id = None
+                self.current_assistant_item_played_ms = 0
             if item_id_done in self.client_initiated_truncated_item_ids:
+                self.log(f"Client: Removing {item_id_done} from client_initiated_truncated_item_ids.")
                 self.client_initiated_truncated_item_ids.discard(item_id_done)
         
-        elif msg_type == "error": # Log system error
-            if self.session_id: log_conversation_turn(self.session_id, "system_event", json.dumps({"event": "openai_error", "details": msg.get('error', {})}))
-            if "session" in msg.get('error', {}).get('message','').lower():
-                if self.ws_app: self.ws_app.close() # Trigger reconnect
-
+        elif msg_type == "response.done": 
+            response_details = msg.get("response", {})
+            if response_details.get("status") == "cancelled":
+                self.log(f"Client: response.done with status 'cancelled'. Cleaning up.")
+                for item_in_cancelled in response_details.get("output", []):
+                    if isinstance(item_in_cancelled, dict):
+                        item_id_cancelled = item_in_cancelled.get("id")
+                        if item_id_cancelled:
+                            self.client_initiated_truncated_item_ids.discard(item_id_cancelled)
+                            if self.last_assistant_item_id == item_id_cancelled:
+                                self.last_assistant_item_id = None; self.current_assistant_item_played_ms = 0
+        elif msg_type == "input_audio_buffer.speech_started": 
+            self.log(f"Client: !!! Server VAD: Speech Started !!! State: {self.get_app_state()}")
+            if self.get_app_state() == "SENDING_TO_OPENAI": self._perform_truncation(reason_prefix="Server VAD")
+        elif msg_type == "input_audio_buffer.speech_stopped":
+            self.log("Client: Server VAD: Speech Stopped.")
+        elif msg_type == "error":
+            error_message = msg.get('error', {}).get('message', 'Unknown error from OpenAI.')
+            self.log(f"Client ERROR from OpenAI: {error_message}")
+            if "session" in error_message.lower() or "authorization" in error_message.lower():
+                self.log("Client: Critical OpenAI session/auth error. Closing connection."); self.connected = False 
+                if self.ws_app: self.ws_app.close()
     def on_error(self, ws, error):
-        self._log_section("WebSocket ERROR"); self.log(f"Client WS Error: {error}"); self.connected = False
-        if self.session_id: log_conversation_turn(self.session_id, "system_event", json.dumps({"event": "websocket_error", "details": str(error)}))
-    def on_close(self, ws, close_status_code, close_msg):
-        self._log_section("WebSocket CLOSE"); self.log(f"Client WS Closed: {close_status_code} {close_msg}"); self.connected = False
+        self._log_section("WebSocket ERROR TEST")
+        self.log(f"Client: WebSocket error: {error}")
+        self.connected = False
         
-        if self.session_id: log_conversation_turn(self.session_id, "system_event", json.dumps({"event": "websocket_closed", "code": close_status_code, "reason": close_msg}))
-        self._notify_frontend_disconnect(reason=f"Connection closed (Code: {close_status_code})")
+        # Reset all state variables related to the active session
+        self.last_assistant_item_id = None
+        self.current_assistant_item_played_ms = 0
+        self.accumulated_tool_args.clear()
+        self.client_initiated_truncated_item_ids.clear()
+        
+        # Only attempt to log the error if we have a session ID
+        if self.session_id:
+            try:
+                # Convert error to a simple string to avoid serialization issues
+                error_str = str(error) if error is not None else "Unknown WebSocket error"
+                log_conversation_turn(
+                    self.session_id,
+                    "system_event",
+                    json.dumps({"event": "websocket_error", "details": error_str})
+                )
+            except Exception as e_log:
+                self.log(f"ERROR: Failed to log WebSocket error to conversation history: {e_log}")
+    def on_close(self, ws, close_status_code, close_msg):
+        self._log_section("WebSocket CLOSE")
+        self.log(f"Client WS Closed: {close_status_code} {close_msg}")
+        self.connected = False
+        
+        # Log connection close to conversation history if we have a session
+        if self.session_id:
+            try:
+                # Create simple string representations that can be safely JSON serialized
+                code_str = str(close_status_code) if close_status_code is not None else "null"
+                reason_str = str(close_msg) if close_msg is not None else "null"
+                
+                log_conversation_turn(
+                    self.session_id,
+                    "system_event",
+                    json.dumps({
+                        "event": "websocket_closed",
+                        "code": code_str,
+                        "reason": reason_str
+                    })
+                )
+            except Exception as e_log:
+                self.log(f"ERROR: Failed to log WebSocket close to conversation history: {e_log}")
+        
+        # Create a safe status code string for the frontend notification
+        status_code_str = str(close_status_code) if close_status_code is not None else "unknown"
+        self._notify_frontend_disconnect(reason=f"Connection closed (Code: {status_code_str})")
 
     def run_client(self):
         self.log("Client: Starting run_client loop.")
@@ -469,7 +663,7 @@ class OpenAISpeechClient:
 
             self.ws_app = websocket.WebSocketApp(self.ws_url, header=self.headers, on_open=self.on_open, on_message=self.on_message, on_error=self.on_error, on_close=self.on_close)
             try:
-                self.ws_app.run_forever(ping_interval=self.config.get("OPENAI_PING_INTERVAL_S", 20), ping_timeout=self.config.get("OPENAI_PING_TIMEOUT_S", 10))
+                self.ws_app.run_forever(ping_interval=70, ping_timeout=30)
             except Exception as e: self.log(f"Client: Exception in run_forever: {e}")
             finally:
                 self.connected = False
