@@ -149,7 +149,7 @@ class OpenAISpeechClient:
                     self.player.play(segment_to_process_bytes) 
 
 
-   # --- Phase 4: Frontend Notification Methods ---
+    # --- Phase 4: Frontend Notification Methods and TTS Announcement ---
     def _notify_frontend(self, payload: dict):
         if not self.ui_status_update_url:
             # Already logged in __init__ if not configured, so keep this brief or remove
@@ -157,7 +157,55 @@ class OpenAISpeechClient:
             return
         try:
             # Adding a small timeout to prevent blocking indefinitely
-            response = requests.post(self.ui_status_update_url, json=payload, timeout=2) 
+            response = requests.post(self.ui_status_update_url, json=payload, timeout=2)
+            if response.status_code == 200:
+                self.log(f"Successfully notified frontend: Type '{payload.get('type')}', Status '{payload.get('status', {}).get('connection')}'")
+            else:
+                self.log(f"WARN: Failed to notify frontend. Status: {response.status_code}, Response: {response.text[:100]}")
+        except requests.exceptions.RequestException as e:
+            self.log(f"WARN: Error notifying frontend: {e}")
+        except Exception as e_notify: # Catch any other unexpected error
+            self.log(f"WARN: Unexpected error in _notify_frontend: {e_notify}")
+            
+    def generate_update_announcement(self, contact_name):
+        """
+        Generate a brief TTS announcement about an update without providing details.
+        Uses the same OpenAI voice as configured for real-time conversations.
+        
+        Args:
+            contact_name: The name of the contact associated with the update
+            
+        Returns:
+            bytes: PCM audio bytes of the announcement
+        """
+        if not self.sync_openai_client:
+            self.log("WARN: Synchronous OpenAI client not available for TTS announcement")
+            return None
+            
+        # Create a concise announcement without details
+        announcement_text = f"I have an update on your call with {contact_name}. Wake me up and I can give you the details."
+        
+        try:
+            # Use the same voice configured for the conversation
+            voice = self.config.get("OPENAI_VOICE", "ash")
+            
+            # Generate TTS using OpenAI's API
+            response = self.sync_openai_client.audio.speech.create(
+                model="tts-1",  # Or "tts-1-hd" for higher quality
+                voice=voice,
+                input=announcement_text,
+                response_format="pcm"  # Get PCM format directly
+            )
+            
+            # Get the audio content as bytes
+            announcement_audio = response.content
+            
+            self.log(f"Generated TTS announcement for contact: {contact_name}")
+            return announcement_audio
+            
+        except Exception as e:
+            self.log(f"ERROR generating TTS announcement: {e}")
+            return None
             if response.status_code == 200:
                 self.log(f"Successfully notified frontend: Type '{payload.get('type')}', Status '{payload.get('status', {}).get('connection')}'")
             else:

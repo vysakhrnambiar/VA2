@@ -348,14 +348,51 @@ def get_db_connection_for_monitor():
     except sqlite3.Error as e:
         log(f"DB_MONITOR: Error connecting to scheduled_calls_db: {e}", logging.ERROR)
         return None
+def play_update_announcement(openai_client_instance, contact_name):
+    """
+    Generate and play a TTS announcement about an update when in wake word mode.
+    
+    Args:
+        openai_client_instance: Reference to the OpenAI client
+        contact_name: Name of the contact associated with the update
+    """
+    # Only play announcements in wake word mode
+    if get_app_state_main() != STATE_LISTENING_FOR_WAKEWORD:
+        log("Update announcement skipped - not in wake word mode")
+        return False
+        
+    # Check if player is available
+    if not player_instance:
+        log("Update announcement skipped - player not available")
+        return False
+        
+    # Generate the announcement audio
+    announcement_audio = openai_client_instance.generate_update_announcement(contact_name)
+    if not announcement_audio:
+        log("Failed to generate announcement audio")
+        return False
+        
+    # Play the announcement
+    try:
+        log(f"Playing update announcement for contact: {contact_name}")
+        player_instance.play(announcement_audio)
+        player_instance.flush()
+        return True
+    except Exception as e:
+        log(f"ERROR playing update announcement: {e}")
+        return False
 
-def db_monitor_thread_func(shutdown_event: threading.Event):
+def db_monitor_thread_func(shutdown_event: threading.Event, openai_client_ref=None):
     log("DB_MONITOR: Thread started.", logging.INFO)
     poll_interval = APP_CONFIG.get("DB_MONITOR_POLL_INTERVAL_S", 30)
     notify_url = APP_CONFIG.get("FASTAPI_NOTIFY_CALL_UPDATE_URL")
 
     if not notify_url:
         log("DB_MONITOR: FASTAPI_NOTIFY_CALL_UPDATE_URL not configured. Thread will not send notifications.", logging.ERROR)
+        return
+        
+    if not openai_client_ref:
+        log("DB_MONITOR: OpenAI client reference not provided. TTS announcements will be disabled.", logging.WARNING)
         return
 
     while not shutdown_event.is_set():
@@ -390,6 +427,18 @@ def db_monitor_thread_func(shutdown_event: threading.Event):
                     response = requests.post(notify_url, json=payload, timeout=5)
                     if response.status_code == 200:
                         log(f"DB_MONITOR: Successfully notified frontend for job ID {job['id']}.", logging.INFO)
+                        
+                        # Add TTS announcement if in wake word mode and we have OpenAI client reference
+                        if get_app_state_main() == STATE_LISTENING_FOR_WAKEWORD and openai_client_ref:
+                            # Use a separate thread to avoid blocking the DB monitor thread
+                            announcement_thread = threading.Thread(
+                                target=play_update_announcement,
+                                args=(openai_client_ref, job['contact_name']),
+                                daemon=True
+                            )
+                            announcement_thread.start()
+                            log(f"DB_MONITOR: Started TTS announcement thread for job ID {job['id']}")
+                        
                         # DO NOT update main_agent_informed_user here. openai_client will do it after LLM priming.
                     else:
                         log(f"DB_MONITOR: Failed to notify frontend for job ID {job['id']}. Status: {response.status_code}, Resp: {response.text[:100]}", logging.WARNING)
@@ -464,9 +513,13 @@ if __name__ == "__main__":
     log("Audio pipeline thread started.")
 
     # --- Phase 4: Start DB Monitor Thread ---
-    db_monitor_th = threading.Thread(target=db_monitor_thread_func, args=(db_monitor_shutdown_event,), daemon=True)
+    db_monitor_th = threading.Thread(
+        target=db_monitor_thread_func,
+        args=(db_monitor_shutdown_event, openai_client_instance),
+        daemon=True
+    )
     db_monitor_th.start()
-    log("DB monitor thread started.")
+    log("DB monitor thread started with TTS announcement capability.")
     # --- End of Phase 4 DB Monitor Thread Start ---
 
     try:

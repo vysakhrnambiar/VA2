@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Call Monitoring Dashboard</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="" />
+    <link
+      rel="stylesheet"
+      as="style"
+      onload="this.rel='stylesheet'"
+      href="https://fonts.googleapis.com/css2?display=swap&family=Noto+Sans%3Awght%40400%3B500%3B700%3B900&family=Space+Grotesk%3Awght%40400%3B500%3B700"
+    />
+    <link rel="stylesheet" href="/static/manual_call/addcall.css">
+    <link rel="stylesheet" href="/static/manual_call/calls.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-left">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M24 18.4228L42 11.475V34.3663C42 34.7796 41.7457 35.1504 41.3601 35.2992L24 42V18.4228Z" fill="currentColor"></path>
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M24 8.18819L33.4123 11.574L24 15.2071L14.5877 11.574L24 8.18819ZM9 15.8487L21 20.4805V37.6263L9 32.9945V15.8487ZM27 37.6263V20.4805L39 15.8487V32.9945L27 37.6263ZM25.354 2.29885C24.4788 1.98402 23.5212 1.98402 22.646 2.29885L4.98454 8.65208C3.7939 9.08038 3 10.2097 3 11.475V34.3663C3 36.0196 4.01719 37.5026 5.55962 38.098L22.9197 44.7987C23.6149 45.0671 24.3851 45.0671 25.0803 44.7987L42.4404 38.098C43.9828 37.5026 45 36.0196 45 34.3663V11.475C45 10.2097 44.2061 9.08038 43.0155 8.65208L25.354 2.29885Z" fill="currentColor"></path>
+                    </svg>
+                </div>
+                <h1 class="header-title">Call Monitoring</h1>
+            </div>
+            <div class="header-right">
+                <a href="/addcall" class="nav-button">Add New Call</a>
+            </div>
+        </header>
+        <main class="main-content">
+            <div class="dashboard-container">
+                <div class="dashboard-header">
+                    <h2>Scheduled Calls</h2>
+                    <div class="controls">
+                        <button id="refresh-button" class="button secondary-button">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M1 20v-6h6"></path>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <div class="calls-table-container">
+                    <table id="calls-table" class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Contact</th>
+                                <th>Phone</th>
+                                <th>Status</th>
+                                <th>Attempts</th>
+                                <th>Next Retry</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="calls-table-body">
+                            <tr class="loading-row">
+                                <td colspan="8">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading calls data...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Modal for viewing call details -->
+            <div id="call-details-modal" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 id="modal-title">Call Details</h3>
+                        <button id="close-modal" class="close-button">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="call-summary">
+                            <h4>Call Information</h4>
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <span class="info-label">Contact:</span>
+                                    <span id="detail-contact" class="info-value"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Phone:</span>
+                                    <span id="detail-phone" class="info-value"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Status:</span>
+                                    <span id="detail-status" class="info-value"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Attempts:</span>
+                                    <span id="detail-attempts" class="info-value"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Next Retry:</span>
+                                    <span id="detail-next-retry" class="info-value"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Created:</span>
+                                    <span id="detail-created" class="info-value"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="call-objectives">
+                            <h4>Call Objectives</h4>
+                            <div class="objective-container">
+                                <h5>Initial Objective:</h5>
+                                <div id="detail-initial-objective" class="objective-text"></div>
+                                
+                                <h5>Current Objective:</h5>
+                                <div id="detail-current-objective" class="objective-text"></div>
+                                
+                                <h5>Final Summary:</h5>
+                                <div id="detail-final-summary" class="objective-text"></div>
+                            </div>
+                        </div>
+
+                        <div class="call-attempts">
+                            <h4>Call Attempts</h4>
+                            <div id="attempts-container">
+                                <p class="no-attempts-message">No call attempts have been made yet.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/manual_call/calls.js"></script>
+</body>
+</html>

@@ -9,6 +9,9 @@ import json
 import time
 import os
 
+# Import manual call routes
+from manual_call_routes import router as manual_call_router
+
 # --- Logging ---
 def log_server(msg: str):
     print(f"[WEB_SERVER] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}")
@@ -17,7 +20,11 @@ def log_server(msg: str):
 app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "frontend")), name="static")
+app.mount("/static/manual_call", StaticFiles(directory=os.path.join(BASE_DIR, "frontend/manual_call")), name="static_manual_call")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "frontend"))
+
+# Include manual call router
+app.include_router(manual_call_router)
 
 # --- WebSocket Connection Manager ---
 connected_clients: set[WebSocket] = set()

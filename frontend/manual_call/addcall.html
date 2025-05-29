@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Manual Call Request</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="" />
+    <link
+      rel="stylesheet"
+      as="style"
+      onload="this.rel='stylesheet'"
+      href="https://fonts.googleapis.com/css2?display=swap&family=Noto+Sans%3Awght%40400%3B500%3B700%3B900&family=Space+Grotesk%3Awght%40400%3B500%3B700"
+    />
+    <link rel="stylesheet" href="/static/manual_call/addcall.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-left">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M24 18.4228L42 11.475V34.3663C42 34.7796 41.7457 35.1504 41.3601 35.2992L24 42V18.4228Z" fill="currentColor"></path>
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M24 8.18819L33.4123 11.574L24 15.2071L14.5877 11.574L24 8.18819ZM9 15.8487L21 20.4805V37.6263L9 32.9945V15.8487ZM27 37.6263V20.4805L39 15.8487V32.9945L27 37.6263ZM25.354 2.29885C24.4788 1.98402 23.5212 1.98402 22.646 2.29885L4.98454 8.65208C3.7939 9.08038 3 10.2097 3 11.475V34.3663C3 36.0196 4.01719 37.5026 5.55962 38.098L22.9197 44.7987C23.6149 45.0671 24.3851 45.0671 25.0803 44.7987L42.4404 38.098C43.9828 37.5026 45 36.0196 45 34.3663V11.475C45 10.2097 44.2061 9.08038 43.0155 8.65208L25.354 2.29885Z" fill="currentColor"></path>
+                    </svg>
+                </div>
+                <h1 class="header-title">Manual Call Request</h1>
+            </div>
+        </header>
+        <main class="main-content">
+            <div class="form-container">
+                <h2>Add New Call Request</h2>
+                <p class="form-description">Use this form to manually add a new outbound call to a customer who previously contacted Al Hind Dental clinic.</p>
+                
+                <form id="call-request-form" action="/api/manual_call" method="post">
+                    <div class="form-group">
+                        <label for="contact-name">Customer Name *</label>
+                        <input type="text" id="contact-name" name="contact_name" required>
+                        <p class="field-hint">Name of the person who will receive the call</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="phone-number">Customer Phone Number *</label>
+                        <input type="tel" id="phone-number" name="phone_number" placeholder="e.g., 1234567890" required>
+                        <p class="field-hint">Enter numbers only, no spaces or special characters</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="company-name">Company Name (Optional)</label>
+                        <input type="text" id="company-name" name="company_name" value="Al Hind Dental clinic">
+                        <p class="field-hint">Company the agent will identify as calling from. Leave blank to use DTC Executive Office.</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="call-purpose">Call Objective *</label>
+                        <textarea id="call-purpose" name="call_purpose" rows="5" required>This is a follow-up call from [COMPANY]. The customer previously requested information or a call back. The agent should:
+1. Introduce themselves as calling from [COMPANY]
+2. Ask about the customer's dental issues or concerns
+3. Discuss possible treatment options if appropriate
+4. Offer to schedule an appointment if the customer is interested
+5. Thank the customer for their time</textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="urgency">Call Priority *</label>
+                        <select id="urgency" name="urgency" required>
+                            <option value="low">Low Priority (Schedule for tomorrow)</option>
+                            <option value="medium" selected>Medium Priority (Schedule within 3 hours)</option>
+                            <option value="high">High Priority (Schedule within 1 hour)</option>
+                            <option value="urgent">Urgent (Schedule immediately)</option>
+                        </select>
+                        <p class="field-hint">Determines when the call will be scheduled</p>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="reset" class="button secondary-button">Clear Form</button>
+                        <button type="submit" class="button primary-button">Submit Request</button>
+                    </div>
+                </form>
+                
+                <div id="submission-status" class="status-message hidden"></div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/manual_call/addcall.js"></script>
+</body>
+</html>
