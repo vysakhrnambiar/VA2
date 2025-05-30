@@ -167,7 +167,11 @@ def set_app_state_main(new_state): # Unchanged
         if current_app_state != new_state:
             log(f"App State changed: {current_app_state} -> {new_state}")
             current_app_state = new_state
-            if new_state == STATE_SENDING_TO_OPENAI: state_just_changed_to_sending = True
+            # Clear audio state when transitioning to wake word mode
+            if new_state == STATE_LISTENING_FOR_WAKEWORD and openai_client_instance:
+                openai_client_instance._clear_audio_state()
+            elif new_state == STATE_SENDING_TO_OPENAI:
+                state_just_changed_to_sending = True
 def get_app_state_main(): # Unchanged
     with state_lock: return current_app_state
 
@@ -225,7 +229,10 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
     log("Mic stream opened. Audio pipeline started.")
     local_vad_speech_frames_count = 0; local_vad_silence_frames_after_speech = 0
     local_interrupt_cooldown_frames_remaining = 0
-    wf_raw = None; wf_processed = None 
+    wf_raw = None; wf_processed = None
+    
+    # Audio sending counter
+    audio_send_counter = 0
     try:
         wf_raw = wave.open("mic_capture_raw.wav", 'wb'); wf_raw.setnchannels(CHANNELS); wf_raw.setsampwidth(p.get_sample_size(FORMAT)); wf_raw.setframerate(INPUT_RATE)
         wf_processed = wave.open("mic_capture_processed.wav", 'wb'); wf_processed.setnchannels(CHANNELS); wf_processed.setsampwidth(p.get_sample_size(FORMAT)); wf_processed.setframerate(INPUT_RATE)
@@ -274,7 +281,9 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
                         elif len(vad_chunk) < VAD_BYTES_PER_FRAME and len(vad_chunk) > 0 : vad_chunk += b'\x00' * (VAD_BYTES_PER_FRAME - len(vad_chunk))
                         
                         if len(vad_chunk) == VAD_BYTES_PER_FRAME and is_speech_detected_by_webrtc_vad(vad_chunk):
-                            local_vad_speech_frames_count += 1; local_vad_silence_frames_after_speech = 0
+                            local_vad_speech_frames_count += 1
+                            local_vad_silence_frames_after_speech = 0
+                            log(f"LOCAL_VAD: Speech detected - Frame count: {local_vad_speech_frames_count}/{MIN_SPEECH_FRAMES_FOR_LOCAL_INTERRUPT}", logging.DEBUG)
                             if local_vad_speech_frames_count >= MIN_SPEECH_FRAMES_FOR_LOCAL_INTERRUPT:
                                 log(f"LOCAL_VAD: User speech INTERRUPT detected.", logging.DEBUG)
                                 openai_client_ref.handle_local_user_speech_interrupt()
@@ -282,8 +291,11 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
                                 local_vad_speech_frames_count = 0
                         elif local_vad_speech_frames_count > 0: # Speech was detected, now silence
                             local_vad_silence_frames_after_speech += 1
+                            log(f"LOCAL_VAD: Silence after speech - Count: {local_vad_silence_frames_after_speech}/{MIN_SILENCE_FRAMES_TO_RESET_LOCAL_VAD_STATE}", logging.DEBUG)
                             if local_vad_silence_frames_after_speech >= MIN_SILENCE_FRAMES_TO_RESET_LOCAL_VAD_STATE:
-                                local_vad_speech_frames_count = 0; local_vad_silence_frames_after_speech = 0
+                                log("LOCAL_VAD: Reset due to silence threshold reached", logging.DEBUG)
+                                local_vad_speech_frames_count = 0
+                                local_vad_silence_frames_after_speech = 0
                 except Exception as e_vad_proc: log(f"Error in local VAD processing: {e_vad_proc}", logging.WARNING)
             else: # Reset if not in VAD check conditions
                 local_vad_speech_frames_count = 0; local_vad_silence_frames_after_speech = 0
@@ -310,19 +322,26 @@ def continuous_audio_pipeline(openai_client_ref): # Unchanged
 
             if current_pipeline_app_state_iter == STATE_SENDING_TO_OPENAI and raw_audio_bytes_24k:
                 if openai_client_ref.connected: # Send only if connected
+                    # Increment counter and log periodically
+                    audio_send_counter += 1
+                    if audio_send_counter % 75 == 0:  # Log every 75th message
+                        log(f"🎤 AUDIO: Sent {audio_send_counter} chunks to OpenAI", logging.INFO)
+                        
                     audio_b64_str = base64.b64encode(raw_audio_bytes_24k).decode('utf-8')
                     audio_msg_to_send = {"type": "input_audio_buffer.append", "audio": audio_b64_str}
                     try:
                         if hasattr(openai_client_ref.ws_app, 'send'):
                             openai_client_ref.ws_app.send(json.dumps(audio_msg_to_send))
                             if state_just_changed_to_sending:
+                                # Log initial response create message
+                                log("🎙️ CONVERSATION: Initiating new assistant response", logging.INFO)
                                 # Directly use the string without any get() calls
                                 voice_to_use = "ash"  # Hardcoded for now to bypass any potential issues
                                 response_create_payload = {"type": "response.create", "response": {"modalities": ["text", "audio"], "voice": APP_CONFIG.get("OPENAI_VOICE", "ash"), "output_audio_format": "pcm16"}}
                                 openai_client_ref.ws_app.send(json.dumps(response_create_payload))
                                 state_just_changed_to_sending = False
                     except Exception as e_send_ws:
-                        log(f"Exception during WS send from audio pipe: {e_send_ws}", logging.WARNING)
+                        log(f"❌ ERROR: Failed to send audio: {e_send_ws}", logging.WARNING)
                         # Let client's run_client handle major disconnects
             # ... rest of VAD/WW logic ...
 

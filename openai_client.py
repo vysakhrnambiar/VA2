@@ -23,7 +23,7 @@ from conversation_history_db import get_recent_turns
 import sqlite3
 
 # --- Constants for Phase 3 ---
-CONTEXT_HISTORY_LIMIT = 15
+CONTEXT_HISTORY_LIMIT = 30  # Increased for better context retention
 BASE_DIR_CLIENT = os.path.dirname(os.path.abspath(__file__))
 SCHEDULED_CALLS_DB_PATH = os.path.join(BASE_DIR_CLIENT, "scheduled_calls.db")
 CONTEXT_SUMMARIZER_MODEL = os.getenv("CONTEXT_SUMMARIZER_MODEL", "gpt-4o-mini") # Use env var or fallback
@@ -55,6 +55,10 @@ class OpenAISpeechClient:
         self.current_assistant_item_played_ms = 0
         self.client_audio_chunk_duration_ms = self.config.get("CHUNK_MS", 30)
         self.client_initiated_truncated_item_ids = set()
+        
+        # Audio logging counters
+        self.audio_received_counter = 0
+        self.audio_sent_counter = 0
 
         self.use_ulaw_for_openai = self.config.get("USE_ULAW_FOR_OPENAI_INPUT", False)
         self.desired_playback_speed = float(self.config.get("TSM_PLAYBACK_SPEED", 1.0))
@@ -96,10 +100,24 @@ class OpenAISpeechClient:
 
 
 
+    def _clear_audio_state(self):
+        """Clear all audio-related state and buffers."""
+        if self.player:
+            self.player.clear()
+            self.player.flush()
+        self.openai_audio_buffer_raw_bytes = b''
+        self.last_assistant_item_id = None
+        self.current_assistant_item_played_ms = 0
+        self.audio_received_counter = 0
+
     def _process_and_play_audio(self, audio_data_bytes: bytes):
         """
         Buffers incoming audio, applies TSM with pytsmod.wsola if enabled, and sends to player.
         """
+        # Don't process audio if we're transitioning states
+        if self.get_app_state() == "LISTENING_FOR_WAKEWORD":
+            return
+
         if not self.tsm_enabled:
             if self.player:
                 self.player.play(audio_data_bytes)
@@ -335,12 +353,35 @@ class OpenAISpeechClient:
         history_string_for_llm = "\n".join(formatted_history)
         self.log(f"Formatted history for summarizer (last {len(formatted_history)} turns): \n{history_string_for_llm[:300]}...")
 
+        # Analyze history for connection events
+        connection_events = []
+        for turn in recent_turns:
+            if turn['role'] == 'system_event':
+                try:
+                    event_data = json.loads(turn['content'])
+                    if event_data.get('event') in ['websocket_error', 'websocket_closed']:
+                        connection_events.append(turn)
+                except:
+                    pass
+
+        connection_context = ""
+        if connection_events:
+            connection_context = "\nNote: There were some connection interruptions in the previous conversation."
+
         prompt_for_summarizer = f"""Current UTC time is {dt.now(timezone.utc).isoformat()}.
-        Summarize the key points from the following recent conversation history. Focus on unresolved user questions, tasks the assistant was performing, or the last explicit user request to understand the immediate context for resuming the conversation.
-        Output only a brief, factual summary. If the history is empty, too vague, or implies the conversation ended cleanly, output "No specific unresolved context to resume."
+        Analyze and summarize the following conversation history, focusing on:
+        1. Key unresolved questions or tasks
+        2. Important context from previous interactions
+        3. The last state of any ongoing tasks or discussions
+        4. Any tool calls or actions that were in progress
+        
+        If the conversation ended cleanly or there's no significant context to maintain, output "No specific unresolved context to resume."
 
         History:
         {history_string_for_llm}
+        {connection_context}
+
+        Provide a concise, natural summary that captures the essential context needed to continue the conversation effectively.
 
         Briefing:
         """
@@ -421,6 +462,19 @@ class OpenAISpeechClient:
             tool_result_str = handler_function(**parsed_args, config=config)
             tool_output_for_llm = str(tool_result_str)
             self.log(f"Client (Thread - {function_name}): Execution complete. Result snippet: '{tool_output_for_llm[:150]}...'")
+            # Log tool result to conversation history
+            if self.session_id:
+                try:
+                    log_conversation_turn(
+                        self.session_id,
+                        "tool_result",
+                        json.dumps({
+                            "name": function_name,
+                            "result": tool_output_for_llm
+                        })
+                    )
+                except Exception as e:
+                    self.log(f"ERROR: Failed to log tool result to conversation history: {e}", logging.ERROR)
         except Exception as e_tool_exec_thread:
             self.log(f"Client (Thread - {function_name}) ERROR: Exception during execution: {e_tool_exec_thread}")
             error_detail = f"An error occurred while executing the tool '{function_name}': {str(e_tool_exec_thread)}"
@@ -456,28 +510,171 @@ class OpenAISpeechClient:
                 self.client_initiated_truncated_item_ids.add(item_id_to_truncate)
         except Exception as e_send_trunc: self.log(f"Client ERROR sending truncate: {e_send_trunc}")
         self.last_assistant_item_id = None; self.current_assistant_item_played_ms = 0
+    def _wait_for_audio_completion(self, timeout_s=5.0):
+        """Wait for any current audio to finish playing."""
+        start_time = time.time()
+        while (time.time() - start_time) < timeout_s:
+            # Check if there's any audio still playing
+            if not self.last_assistant_item_id and len(self.player.buffer) == 0:
+                return True  # Audio finished
+            time.sleep(0.1)  # Small sleep to prevent CPU spin
+        return False  # Timeout reached
+
     def handle_local_user_speech_interrupt(self):
         if self.get_app_state() == "SENDING_TO_OPENAI": self._perform_truncation(reason_prefix="Local VAD")
 
  
+    def _format_message(self, msg, msg_type):
+        """Format OpenAI messages into human-readable logs."""
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Session events
+        if msg_type == "session.created":
+            session_id = msg.get('session', {}).get('id')
+            expires_at = msg.get('session', {}).get('expires_at', 0)
+            try:
+                expires_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expires_at))
+            except:
+                expires_str = str(expires_at)
+            return f"📡 SESSION: Created new session {session_id} (expires: {expires_str})"
+            
+        elif msg_type == "session.updated":
+            return f"📡 SESSION: Updated session {msg.get('session', {}).get('id')}"
+            
+        # Conversation items
+        elif msg_type == "conversation.item.created":
+            item = msg.get("item", {})
+            item_type = item.get("type")
+            role = item.get("role")
+            item_id = item.get("id")
+            
+            if role == "user":
+                return f"👤 USER: New message started (ID: {item_id})"
+            elif role == "assistant" and item_type == "message":
+                return f"🤖 ASSISTANT: New message started (ID: {item_id})"
+            elif item_type == "function_call":
+                name = item.get("name", "unknown")
+                return f"🔧 FUNCTION: Starting '{name}' (ID: {item_id})"
+            
+        # Transcription events
+        elif msg_type == "conversation.item.input_audio_transcription.completed":
+            transcript = msg.get("transcript", "")
+            # Log completed user transcription
+            if self.session_id and transcript:
+                try:
+                    log_conversation_turn(
+                        self.session_id,
+                        "user",
+                        transcript
+                    )
+                except Exception as e:
+                    self.log(f"ERROR: Failed to log user transcript to conversation history: {e}", logging.ERROR)
+            return f"------ CONVERSATION ------\n👤 USER SAID: \"{transcript}\"\n---------------------------"
+            
+        elif msg_type == "response.audio_transcript.done":
+            transcript = msg.get("transcript", "")
+            # Log completed assistant response
+            if self.session_id and transcript:
+                try:
+                    log_conversation_turn(
+                        self.session_id,
+                        "assistant",
+                        transcript
+                    )
+                except Exception as e:
+                    self.log(f"ERROR: Failed to log assistant response to conversation history: {e}", logging.ERROR)
+            return f"------ CONVERSATION ------\n🤖 ASSISTANT SAID: \"{transcript}\"\n---------------------------"
+            
+        elif msg_type == "response.audio_transcript.done":
+            transcript = msg.get("transcript", "")
+            return f"------ CONVERSATION ------\n🤖 ASSISTANT SAID: \"{transcript}\"\n---------------------------"
+            
+        # Function calling
+        elif msg_type == "response.function_call_arguments.done":
+            name = msg.get("name")
+            call_id = msg.get("call_id")
+            args = msg.get("arguments", "{}")
+            args_preview = args[:100] + ("..." if len(args) > 100 else "")
+            return f"🔧 FUNCTION: Executing '{name}' (ID: {call_id})\n    Args: {args_preview}"
+            
+        # Truncation and completion events
+        elif msg_type == "conversation.item.truncated":
+            item_id = msg.get("item_id")
+            audio_end_ms = msg.get("audio_end_ms")
+            return f"✂️ TRUNCATED: Item {item_id} at {audio_end_ms}ms"
+            
+        elif msg_type == "response.output_item.done":
+            item = msg.get("item", {})
+            item_id = item.get("id")
+            item_type = item.get("type")
+            status = item.get("status")
+            return f"✅ COMPLETED: {item_type} (ID: {item_id}, Status: {status})"
+            
+        # Speech detection
+        elif msg_type == "input_audio_buffer.speech_started":
+            return f"🎤 SPEECH: User started speaking"
+            
+        elif msg_type == "input_audio_buffer.speech_stopped":
+            return f"🎤 SPEECH: User stopped speaking"
+            
+        # Error handling
+        elif msg_type == "error":
+            error_message = msg.get('error', {}).get('message', 'Unknown error')
+            error_code = msg.get('error', {}).get('code', 'unknown')
+            return f"❌ ERROR: {error_message} (Code: {error_code})"
+            
+        # Default handler for other message types
+        else:
+            # For any other message types, return a short preview
+            return f"ℹ️ {msg_type}: {str(msg)[:100]}..."
+
     def on_message(self, ws, message_str):
         msg = json.loads(message_str)
         msg_type = msg.get("type")
 
-        if msg_type not in ["response.audio.delta", "response.audio_transcript.delta", 
-                            "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
-                            "response.output.delta", "response.function_call_arguments.delta"]:
-            log_content = json.dumps(msg, indent=2) if len(message_str) < 500 else str(msg)[:500] + "..."
-            self.log(f"Client RAW_MSG TYPE: {msg_type} | CONTENT_SNIPPET: {log_content}")
+        # For audio delta messages, use a counter instead of logging each one
+        if msg_type == "response.audio.delta":
+            self.audio_received_counter += 1
+            if self.audio_received_counter % 75 == 0:  # Log every 75th message
+                self.log(f"🔊 AUDIO: Received {self.audio_received_counter} chunks from OpenAI")
+        # For transcription deltas, format them more prominently
+        elif msg_type == "conversation.item.input_audio_transcription.delta":
+            transcript = msg.get("delta", "")
+            if transcript and transcript.strip():  # Only log if there's actual content
+                self.log(f"------ CONVERSATION ------\n👤 USER SAYING: \"{transcript.strip()}\"\n---------------------------")
+                # Log user's speech to conversation history
+                if self.session_id:
+                    try:
+                        log_conversation_turn(self.session_id, "user", transcript.strip())
+                    except Exception as e:
+                        self.log(f"ERROR: Failed to log user transcript to conversation history: {e}", logging.ERROR)
+        # For other high-frequency events that we want to minimize in logs
+        elif msg_type in ["response.audio_transcript.delta", "response.output.delta", "response.function_call_arguments.delta"]:
+            pass  # Skip logging these entirely
+        # For speech detection, use simplified format
+        elif msg_type == "input_audio_buffer.speech_started":
+            self.log(f"🎤 SPEECH: User started speaking | State: {self.get_app_state()}")
+        elif msg_type == "input_audio_buffer.speech_stopped":
+            self.log("🎤 SPEECH: User stopped speaking")
+        # For all other message types, use the formatter
+        else:
+            formatted_message = self._format_message(msg, msg_type)
+            self.log(formatted_message)
 
         if msg_type == "conversation.item.created":
             item = msg.get("item", {})
             item_id, item_role, item_type, item_status = item.get("id"), item.get("role"), item.get("type"), item.get("status")
             if item_role == "assistant" and item_type == "message" and item_status == "in_progress":
-                if self.last_assistant_item_id != item_id: 
-                    self.log(f"Client: New assistant message item starting. ID: {item_id}. Resetting played duration.")
+                if self.last_assistant_item_id != item_id:
+                    self.log(f"------ CONVERSATION START ------\n🤖 ASSISTANT STARTING: New message (ID: {item_id})\n---------------------------")
                     self.last_assistant_item_id = item_id
                     self.current_assistant_item_played_ms = 0
+                    # Log assistant's response start
+                    if self.session_id:
+                        try:
+                            log_conversation_turn(self.session_id, "assistant", "Starting new response...")
+                        except Exception as e:
+                            self.log(f"ERROR: Failed to log assistant response start to conversation history: {e}", logging.ERROR)
         
         elif msg_type == "response.output.delta":
             delta_content = msg.get("delta", {}).get("tool_calls", [])
@@ -504,6 +701,16 @@ class OpenAISpeechClient:
                 return
 
             self.log(f"Client: Function Call Finalized by LLM: Name='{function_to_execute_name}', Call_ID='{call_id}', Args='{final_args_to_use}'")
+            # Log tool call to conversation history
+            if self.session_id:
+                log_conversation_turn(
+                    self.session_id,
+                    "tool_call",
+                    json.dumps({
+                        "name": function_to_execute_name,
+                        "arguments": final_args_to_use
+                    })
+                )
             parsed_args = {}
             try:
                 if final_args_to_use: parsed_args = json.loads(final_args_to_use) 
@@ -522,22 +729,34 @@ class OpenAISpeechClient:
             if function_to_execute_name == END_CONVERSATION_TOOL_NAME:
                 reason = parsed_args.get("reason", "No reason specified by LLM.")
                 self.log(f"Client: LLM requests '{END_CONVERSATION_TOOL_NAME}'. Reason: '{reason}'.")
+                
+                # 1. Wait for any current audio to finish
+                self.log("🔊 AUDIO: Waiting for current audio to complete...")
+                audio_finished = self._wait_for_audio_completion()
+                if not audio_finished:
+                    self.log("⚠️ WARNING: Audio completion timeout reached")
+                
+                # 2. Add a small delay to ensure last message was heard
                 end_conv_delay_s = self.config.get("END_CONV_AUDIO_FINISH_DELAY_S", 2.0)
-                if self.player and (len(self.player.buffer) > 0 or self.last_assistant_item_id):
-                    self.log(f"Client (End_Conv): Player might have audio. Waiting {end_conv_delay_s}s...")
-                    time.sleep(end_conv_delay_s) 
-                else:
-                    time.sleep(0.2) 
-                self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' (after delay) for reason: '{reason}'.")
-                if self.wake_word_active: 
-                    if self.player: self.player.clear(); self.player.flush() 
-                    self.set_app_state("LISTENING_FOR_WAKEWORD") 
-                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) ***\n")
-                else: 
-                    if self.player: self.player.flush()
-                    print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query. ***\n")
-                self.last_assistant_item_id = None 
+                time.sleep(end_conv_delay_s)
+                
+                # 3. Clear all audio buffers
+                if self.player:
+                    self.player.clear()
+                    self.player.flush()
+                self.openai_audio_buffer_raw_bytes = b''
+                
+                # 4. Reset audio state
+                self.last_assistant_item_id = None
                 self.current_assistant_item_played_ms = 0
+                
+                # 5. Transition to wake word mode
+                self.log(f"Client: Executing '{END_CONVERSATION_TOOL_NAME}' for reason: '{reason}'.")
+                if self.wake_word_active:
+                    self.set_app_state("LISTENING_FOR_WAKEWORD")
+                    print(f"\n*** Assistant listening for wake word: '{self.wake_word_detector_instance.wake_word_model_name}' (Reason: {reason}) ***\n")
+                else:
+                    print(f"\n*** Conversation turn ended by LLM (Reason: {reason}). Ready for next query. ***\n")
                 return
 
             elif function_to_execute_name in TOOL_HANDLERS:
@@ -572,44 +791,50 @@ class OpenAISpeechClient:
 
         elif msg_type == "response.audio.delta":
             audio_data_b64 = msg.get("delta")
-            item_id_of_delta = msg.get("item_id") 
-            self.log("Client: response.audio.delta receieved")
+            item_id_of_delta = msg.get("item_id")
+            self.audio_received_counter += 1
+            if self.audio_received_counter % 75 == 0:  # Log every 75th message
+                self.log(f"🔊 AUDIO: Received {self.audio_received_counter} chunks from OpenAI")
             if item_id_of_delta and item_id_of_delta in self.client_initiated_truncated_item_ids:
                 pass
             elif audio_data_b64:
                 audio_data_bytes = base64.b64decode(audio_data_b64)
-                self._process_and_play_audio(audio_data_bytes) 
+                self._process_and_play_audio(audio_data_bytes)
                 if self.last_assistant_item_id and self.last_assistant_item_id == item_id_of_delta:
                     self.current_assistant_item_played_ms += self.client_audio_chunk_duration_ms
         
         elif msg_type == "response.audio.done":
-            self.log("Client: OpenAI Audio reply 'done' received.")
+            # Log completion with total count
+            self.log(f"🔊 AUDIO COMPLETE: Received {self.audio_received_counter} total chunks")
+            # Reset counter for next conversation turn
+            self.audio_received_counter = 0
+            
             if self.tsm_enabled:
                 if len(self.openai_audio_buffer_raw_bytes) > 0:
-                    self.log(f"Client (audio.done): Processing {len(self.openai_audio_buffer_raw_bytes)} remaining bytes with pytsmod.wsola.")
-                    final_segment_to_process_bytes_for_fallback = self.openai_audio_buffer_raw_bytes 
+                    self.log(f"🔄 TSM: Processing {len(self.openai_audio_buffer_raw_bytes)} remaining bytes")
+                    final_segment_to_process_bytes_for_fallback = self.openai_audio_buffer_raw_bytes
                     try:
                         final_segment_bytes = self.openai_audio_buffer_raw_bytes
-                        self.openai_audio_buffer_raw_bytes = b'' 
+                        self.openai_audio_buffer_raw_bytes = b''
                         segment_np_int16 = np.frombuffer(final_segment_bytes, dtype=np.int16)
                         segment_np_float32 = segment_np_int16.astype(np.float32) / 32768.0
                         if segment_np_float32.size > 0:
-                            stretched_audio_float32 = wsola(segment_np_float32, s=self.desired_playback_speed) # <--- CORRECTED: use 's'
+                            stretched_audio_float32 = wsola(segment_np_float32, s=self.desired_playback_speed)
                             clipped_stretched_audio = np.clip(stretched_audio_float32, -1.0, 1.0)
                             stretched_audio_int16 = (clipped_stretched_audio * 32767.0).astype(np.int16)
                             stretched_audio_bytes = stretched_audio_int16.tobytes()
                             if self.player and len(stretched_audio_bytes) > 0:
                                 self.player.play(stretched_audio_bytes)
                     except Exception as e_tsm_flush_proc:
-                        self.log(f"ERROR during TSM final processing (pytsmod.wsola) on audio.done: {e_tsm_flush_proc}. Playing raw if any.")
+                        self.log(f"❌ TSM ERROR: {e_tsm_flush_proc}. Falling back to raw audio.")
                         if self.player and final_segment_to_process_bytes_for_fallback and len(final_segment_to_process_bytes_for_fallback) > 0:
                            self.player.play(final_segment_to_process_bytes_for_fallback)
-            else: 
+            else:
                 if len(self.openai_audio_buffer_raw_bytes) > 0 and self.player:
                     self.player.play(self.openai_audio_buffer_raw_bytes)
                     self.openai_audio_buffer_raw_bytes = b''
-            if self.player: self.player.flush() 
-            self.log(f"Client: Audio done. Current app state: {self.get_app_state()}.")
+            if self.player: self.player.flush()
+            self.log(f"⚙️ STATE: Audio complete, app state: {self.get_app_state()}")
             if not (self.get_app_state() == "LISTENING_FOR_WAKEWORD" and self.wake_word_active):
                 print(f"\n*** Assistant has finished speaking. Ready for your next query. (Ctrl+C to exit) ***\n")
 
@@ -635,16 +860,17 @@ class OpenAISpeechClient:
                             self.client_initiated_truncated_item_ids.discard(item_id_cancelled)
                             if self.last_assistant_item_id == item_id_cancelled:
                                 self.last_assistant_item_id = None; self.current_assistant_item_played_ms = 0
-        elif msg_type == "input_audio_buffer.speech_started": 
-            self.log(f"Client: !!! Server VAD: Speech Started !!! State: {self.get_app_state()}")
+        elif msg_type == "input_audio_buffer.speech_started":
+            self.log(f"🎤 SPEECH: User started speaking | State: {self.get_app_state()}")
             if self.get_app_state() == "SENDING_TO_OPENAI": self._perform_truncation(reason_prefix="Server VAD")
         elif msg_type == "input_audio_buffer.speech_stopped":
-            self.log("Client: Server VAD: Speech Stopped.")
+            self.log("🎤 SPEECH: User stopped speaking")
         elif msg_type == "error":
             error_message = msg.get('error', {}).get('message', 'Unknown error from OpenAI.')
-            self.log(f"Client ERROR from OpenAI: {error_message}")
+            error_code = msg.get('error', {}).get('code', 'unknown')
+            self.log(f"❌ ERROR: {error_message} (Code: {error_code})")
             if "session" in error_message.lower() or "authorization" in error_message.lower():
-                self.log("Client: Critical OpenAI session/auth error. Closing connection."); self.connected = False 
+                self.log("⚠️ CRITICAL: Session/auth error. Closing connection."); self.connected = False
                 if self.ws_app: self.ws_app.close()
     def on_error(self, ws, error):
         self._log_section("WebSocket ERROR TEST")
