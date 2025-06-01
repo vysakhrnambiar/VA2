@@ -2,13 +2,19 @@
 import json
 import os
 import requests # For synchronous HTTP requests
-from datetime import datetime
+from datetime import datetime, date, timedelta, time, timezone # Added timezone
 
 from dateutil import parser as dateutil_parser # For flexible date string parsing
 from dateutil.relativedelta import relativedelta # For "two days back" etc.
-from datetime import datetime, date, timedelta, time # Keep existing datetime
+from typing import List, Dict, Optional # Ensure Optional is imported from typing
 import sqlite3 # For database operations
 
+from conversation_history_db import get_filtered_turns # Import new DB function
+
+CONTEXT_SUMMARIZER_MODEL_FOR_TOOL = os.getenv("CONTEXT_SUMMARIZER_MODEL", "gpt-4o-mini")
+# Tool name from tools_definition
+from tools_definition import GET_CONVERSATION_HISTORY_SUMMARY_TOOL_NAME
+from dateutil import parser as dateutil_parser
 # Import tool names from tools_definition
 from tools_definition import (
     SEND_EMAIL_SUMMARY_TOOL_NAME,
@@ -25,6 +31,14 @@ from tools_definition import (
 
 # Import the new KB extraction function from kb_llm_extractor.py
 from kb_llm_extractor import extract_relevant_sections
+import openai # <<< ADD THIS AT THE TOP
+from dotenv import load_dotenv # <<< ADD THIS AT THE TOP
+load_dotenv() # Ensure .env is loaded when this module is imported
+
+# ... (existing _tool_log, _load_kb_content, database functions, other handlers) ...
+
+CONTEXT_SUMMARIZER_MODEL_FOR_TOOL = os.getenv("CONTEXT_SUMMARIZER_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY_FOR_TOOL_SUMMARIZER = os.getenv("OPENAI_API_KEY") # Get key directly
 
 # Import the new Google services module
 try:
@@ -232,7 +246,7 @@ def handle_check_scheduled_call_status(
     date_reference: str = None,
     time_of_day_preference: str = "any", # Default to "any"
     job_id: int = None
-) -> str:
+    ) -> str:
     _tool_log(f"Handling check_scheduled_call_status. Job ID: {job_id}, Contact: {contact_name}, Objective: {call_objective_snippet}, DateRef: {date_reference}, TimePref: {time_of_day_preference}")
     conn = get_tool_db_connection()
     if not conn:
@@ -372,6 +386,144 @@ def handle_check_scheduled_call_status(
         if conn:
             conn.close()
 
+def _format_history_for_summarizer(turns: List[Dict]) -> str:
+    """Formats a list of turn dicts into a string for the summarizer LLM."""
+    if not turns:
+        return "No conversation history found for the given criteria."
+    
+    formatted_history = []
+    now_utc_aware = datetime.now(timezone.utc) # Ensure timezone is imported in openai_client
+
+    for turn in turns:
+        try:
+            ts_str = turn['timestamp']
+            turn_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            if turn_time.tzinfo is None:
+                turn_time = turn_time.replace(tzinfo=timezone.utc)
+
+            time_diff_seconds = (now_utc_aware - turn_time).total_seconds()
+            time_diff_seconds = max(0, time_diff_seconds)
+
+            if time_diff_seconds < 60: time_ago = f"{int(time_diff_seconds)}s ago"
+            elif time_diff_seconds < 3600: time_ago = f"{int(time_diff_seconds/60)}m ago"
+            # For older history, absolute timestamps might be better if a date was specified
+            # This is a simplification for now.
+            else: time_ago = turn_time.strftime('%Y-%m-%d %H:%M UTC')
+
+
+            role_display = turn['role'].capitalize()
+            content_display = turn['content']
+            if turn['role'] in ['tool_call', 'tool_result']:
+                try: 
+                    content_json = json.loads(turn['content'])
+                    content_display = f"Tool: {content_json.get('name', 'N/A')}, Data: {str(content_json)[:70]}..."
+                except: pass # Keep raw content if not valid JSON
+            formatted_history.append(f"({time_ago}) {role_display}: {content_display}")
+        except Exception as e_ts_format:
+            _tool_log(f"WARN: Could not format timestamp for history tool: {turn.get('timestamp')}. Error: {e_ts_format}")
+            formatted_history.append(f"(Time Unknown) {turn.get('role', 'UNK').capitalize()}: {turn.get('content', '')[:70]}...")
+    
+    return "\n".join(formatted_history)
+
+
+def handle_get_conversation_history_summary(
+    user_question_about_history: str,
+    # config: dict, # We might not need config for this specific handler anymore if API key is direct
+    date_reference: Optional[str] = None,
+    time_of_day_reference: Optional[str] = None,
+    keywords: Optional[str] = None,
+    max_turns_to_scan: int = 100,
+    config: Optional[dict] = None 
+    ) -> str:
+    _tool_log(f"Handling get_conversation_history_summary. Question: '{user_question_about_history}', Date: {date_reference}, Time: {time_of_day_reference}, Keywords: {keywords}")
+
+    # --- Date/Time parsing logic remains the same ---
+    start_dt: Optional[datetime] = None
+    end_dt: Optional[datetime] = None
+    if date_reference:
+        try:
+            # (Your existing robust date/time parsing logic here)
+            # Ensure start_dt and end_dt are timezone-aware (UTC) if your DB stores UTC
+            # Example sketch:
+            today = date.today()
+            now = datetime.now()
+            target_date_obj: Optional[date] = None
+            if date_reference.lower() == "today": target_date_obj = today
+            elif date_reference.lower() == "yesterday": target_date_obj = today - timedelta(days=1)
+            else:
+                parsed_dt_for_date = dateutil_parser.parse(date_reference, default=datetime(now.year, now.month, now.day))
+                target_date_obj = parsed_dt_for_date.date()
+
+            if target_date_obj:
+                time_start = time.min
+                time_end = time.max
+                # Add logic for time_of_day_reference to refine time_start, time_end
+                # ...
+                start_dt = datetime.combine(target_date_obj, time_start)
+                end_dt = datetime.combine(target_date_obj, time_end)
+                # If your system deals with local times but DB is UTC, convert here:
+                # start_dt = start_dt.astimezone(timezone.utc)
+                # end_dt = end_dt.astimezone(timezone.utc)
+                _tool_log(f"Date/Time filter: From {start_dt} to {end_dt}")
+        except Exception as e_date:
+            _tool_log(f"Could not parse date_reference or time: {e_date}. Ignoring date/time filter.")
+            start_dt, end_dt = None, None
+    # --- End of Date/Time parsing ---
+
+    fetched_turns = get_filtered_turns(
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+        keywords=keywords,
+        limit=max_turns_to_scan
+    )
+
+    if not fetched_turns:
+        return f"I couldn't find any conversation history matching your criteria (Date: {date_reference}, Time: {time_of_day_reference}, Keywords: {keywords})."
+
+    history_string_for_llm = _format_history_for_summarizer(fetched_turns)
+
+    if not OPENAI_API_KEY_FOR_TOOL_SUMMARIZER:
+        _tool_log("CRITICAL_ERROR: OPENAI_API_KEY not found in environment for history summarizer tool.")
+        return "Error: History summarization service is not configured (missing API key)."
+
+    try:
+        sync_llm_client = openai.OpenAI(api_key=OPENAI_API_KEY_FOR_TOOL_SUMMARIZER)
+        _tool_log(f"Initialized OpenAI client for history summarizer tool (model: {CONTEXT_SUMMARIZER_MODEL_FOR_TOOL}).")
+    except Exception as e_client_init:
+        _tool_log(f"ERROR: Failed to initialize OpenAI client for history tool: {e_client_init}")
+        return "Error: Internal service for summarizing history is currently unavailable (client init failed)."
+
+    summarizer_prompt_for_tool = f"""The user is asking about past conversations. Their specific question is:
+    "{user_question_about_history}"
+
+    Current UTC time is {datetime.now(timezone.utc).isoformat()}.
+    Based ONLY on the following conversation history excerpt, provide a concise answer or summary that directly addresses the user's question.
+    Quote relevant parts if helpful. If the history does not contain information to answer the question, explicitly state that.
+
+    Conversation History Excerpt:
+    ---
+    {history_string_for_llm}
+    ---
+
+    Answer to the user's question ("{user_question_about_history}") based on the excerpt:
+    """
+    try:
+        _tool_log(f"Sending to summarizer LLM ({CONTEXT_SUMMARIZER_MODEL_FOR_TOOL}) for history tool. Prompt length: {len(summarizer_prompt_for_tool)}")
+        response = sync_llm_client.chat.completions.create(
+            model=CONTEXT_SUMMARIZER_MODEL_FOR_TOOL,
+            messages=[{"role": "user", "content": summarizer_prompt_for_tool}],
+            temperature=0.0,
+            max_tokens=300
+        )
+        summary_answer = response.choices[0].message.content.strip()
+        _tool_log(f"History summarizer LLM response for tool: {summary_answer}")
+        if not summary_answer:
+            return f"I reviewed the history for '{user_question_about_history}' but found no specific details."
+        return summary_answer
+    except Exception as e:
+        _tool_log(f"ERROR summarizing filtered history with LLM: {e}")
+        return "Error: An issue occurred while trying to summarize the conversation history."
+
 
 # Dispatch dictionary to map function names to handler functions
 TOOL_HANDLERS = {
@@ -385,4 +537,5 @@ TOOL_HANDLERS = {
     # Add new handlers for Phase 1
     SCHEDULE_OUTBOUND_CALL_TOOL_NAME: handle_schedule_outbound_call,
     CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME: handle_check_scheduled_call_status,
+    GET_CONVERSATION_HISTORY_SUMMARY_TOOL_NAME: handle_get_conversation_history_summary
 }

@@ -50,6 +50,96 @@ def init_db():
 
 # --- Database Operations ---
 
+# conversation_history_db.py
+import sqlite3
+import os
+from datetime import datetime, date, timedelta, time # Ensure all are imported
+from typing import List, Dict, Optional # For type hints
+from dateutil import parser as dateutil_parser # For flexible date parsing
+
+# ... (existing init_db, add_turn, _ch_log) ...
+
+def get_filtered_turns(
+    session_id: Optional[str] = None,
+    start_datetime: Optional[datetime] = None,
+    end_datetime: Optional[datetime] = None,
+    keywords: Optional[str] = None,
+    limit: int = 50  # Default limit for broader searches
+    ) -> List[Dict]:
+    """
+    Retrieves conversation turns based on various filters.
+    All timestamps in DB are assumed to be UTC.
+    """
+    turns = []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        query_parts = []
+        params = []
+
+        base_query = "SELECT turn_id, session_id, timestamp, role, content FROM conversation_turns"
+
+        if session_id:
+            query_parts.append("session_id = ?")
+            params.append(session_id)
+
+        if start_datetime:
+            query_parts.append("timestamp >= ?")
+            # Ensure datetime is in UTC string format for SQLite
+            params.append(start_datetime.strftime('%Y-%m-%d %H:%M:%S'))
+        if end_datetime:
+            query_parts.append("timestamp <= ?")
+            params.append(end_datetime.strftime('%Y-%m-%d %H:%M:%S'))
+
+        if keywords:
+            # Simple keyword search, can be made more advanced (e.g., FTS5)
+            keyword_parts = []
+            for kw in keywords.split(): # Split by space for multiple keywords
+                if kw.strip():
+                    keyword_parts.append("content LIKE ?")
+                    params.append(f"%{kw.strip()}%")
+            if keyword_parts:
+                query_parts.append(f"({' OR '.join(keyword_parts)})") # Find turns containing ANY of the keywords
+
+        where_clause = ""
+        if query_parts:
+            where_clause = "WHERE " + " AND ".join(query_parts)
+
+        # Always order by timestamp to get a chronological sequence for summarization
+        # Fetch more than limit initially if keywords are involved, then limit after fetching,
+        # or rely on SQL limit if broad. For simplicity now, direct SQL limit.
+        order_by_limit_sql = f"ORDER BY timestamp DESC LIMIT ?" # Get most recent matching criteria
+        params.append(limit)
+
+        full_query = f"{base_query} {where_clause} {order_by_limit_sql}"
+        
+        _ch_log(f"Executing filtered turn query: {full_query} with params: {params}", "DEBUG")
+        cursor.execute(full_query, tuple(params))
+            
+        rows = cursor.fetchall()
+        for row in rows:
+            turns.append(dict(row))
+        
+        turns.reverse() # Reverse to get oldest-first for summarizer
+        _ch_log(f"Retrieved {len(turns)} filtered turns (Limit: {limit}).", "DEBUG")
+
+    except sqlite3.Error as e:
+        _ch_log(f"Error retrieving filtered turns: {e}", "ERROR")
+    except Exception as e_gen: # Catch other potential errors
+        _ch_log(f"Unexpected error in get_filtered_turns: {e_gen}", "ERROR")
+    finally:
+        if conn:
+            conn.close()
+    return turns
+
+# Keep existing get_recent_turns, or adapt it to use get_filtered_turns
+def get_recent_turns(session_id: str = None, limit: int = 20) -> list[dict]:
+    # This can now be a simplified call to get_filtered_turns
+    # if session_id is None, it fetches global recent turns.
+    return get_filtered_turns(session_id=session_id, limit=limit)
+
 def add_turn(session_id: str, role: str, content: str):
     """Adds a new conversation turn to the database.
 

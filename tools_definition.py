@@ -14,6 +14,42 @@ GENERAL_GOOGLE_SEARCH_TOOL_NAME = "general_google_search"
 SCHEDULE_OUTBOUND_CALL_TOOL_NAME = "schedule_outbound_call"
 CHECK_SCHEDULED_CALL_STATUS_TOOL_NAME = "check_scheduled_call_status"
 
+GET_CONVERSATION_HISTORY_SUMMARY_TOOL_NAME = "get_conversation_history_summary"
+TOOL_GET_CONVERSATION_HISTORY_SUMMARY = {
+    "type": "function",
+    "name": GET_CONVERSATION_HISTORY_SUMMARY_TOOL_NAME,
+    "description": (
+        "Retrieves and summarizes past conversation history to answer user questions about previous discussions. "
+        "Use this if the user asks about specific past topics, what was said on a certain day/time, or refers to past "
+        "interactions not immediately in the current short-term context."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "date_reference": {
+                "type": "string",
+                "description": "Optional. A specific date (e.g., 'yesterday', '2024-05-29', 'last Tuesday') to filter history. If referring to 'today', use the current date."
+            },
+            "time_of_day_reference": {
+                "type": "string",
+                "description": "Optional. A time of day (e.g., 'morning', 'around 2 PM', 'evening') to combine with the date_reference for more specific filtering."
+            },
+            "keywords": {
+                "type": "string",
+                "description": "Optional. Specific keywords, phrases, or topics to search for within the historical conversation content (e.g., 'Dubai limo rates', 'Bolt payment')."
+            },
+            "user_question_about_history": {
+                "type": "string",
+                "description": "Mandatory. The user's actual question about the history, which will guide the summarization (e.g., 'What did we discuss about project alpha last week?')."
+            },
+            "max_turns_to_scan": { # Renamed from turns_limit for clarity
+                "type": "integer",
+                "description": "Optional. Maximum number of recent historical turns to scan if no specific date/keywords narrow it down significantly. Default is a system value (e.g., 100)."
+            }
+        },
+        "required": ["user_question_about_history"] # Make the user's question mandatory
+    }
+}
 
 # --- Tool Definitions ---
 
@@ -310,5 +346,7 @@ ALL_TOOLS = [
     TOOL_GENERAL_GOOGLE_SEARCH,
     # Add new tools for Phase 1
     TOOL_SCHEDULE_OUTBOUND_CALL,
-    TOOL_CHECK_SCHEDULED_CALL_STATUS
+    TOOL_CHECK_SCHEDULED_CALL_STATUS,
+    TOOL_GET_CONVERSATION_HISTORY_SUMMARY
+
 ]

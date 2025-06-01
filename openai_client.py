@@ -10,7 +10,7 @@ import openai # For synchronous LLM call in on_open
 from datetime import datetime as dt, timezone # Alias for datetime, import timezone
 import os # For path joining
 import requests # For Phase 4 frontend notifications
-
+from typing import Optional # <<<<<<<<<<<<<<<<<<<<<<<<<<<< ADD THIS IMPORT (or add Optional to an existing typing import)
 # Imports from our other new modules
 from tools_definition import ALL_TOOLS, END_CONVERSATION_TOOL_NAME
 # tool_definition imports (assuming all necessary names are included in ALL_TOOLS)
@@ -304,16 +304,16 @@ class OpenAISpeechClient:
         finally:
             if conn: conn.close()
 
-    def _get_conversation_summary(self, session_id_for_history: str) -> str:
+    def _get_conversation_summary(self, session_id_for_history: Optional[str]) -> str:
         if not self.sync_openai_client:
             self.log("WARN: Synchronous OpenAI client not available for conversation summarization.")
             return "Previous conversation context is unavailable at the moment.\n"
-        if not session_id_for_history:
-            self.log("No session ID available for fetching conversation history.")
-            return ""
+
+
+        self.log(f"Fetching recent turns for summary. Target session_id: {session_id_for_history if session_id_for_history else 'Any (Global)'}")
         recent_turns = get_recent_turns(session_id=session_id_for_history, limit=CONTEXT_HISTORY_LIMIT)
         if not recent_turns:
-            self.log("No recent conversation turns found to summarize.")
+            self.log(f"No recent conversation turns found to summarize (Target session: {session_id_for_history if session_id_for_history else 'Any (Global)'}).")
             return ""
 
         formatted_history = []
@@ -369,24 +369,18 @@ class OpenAISpeechClient:
             connection_context = "\nNote: There were some connection interruptions in the previous conversation."
 
         prompt_for_summarizer = f"""Current UTC time is {dt.now(timezone.utc).isoformat()}.
-        Analyze and summarize the following conversation history, focusing on:
-        1. Key unresolved questions or tasks
-        2. Important context from previous interactions
-        3. The last state of any ongoing tasks or discussions
-        4. Any tool calls or actions that were in progress
-        
-        If the conversation ended cleanly or there's no significant context to maintain, output "No specific unresolved context to resume."
+        Briefly state the essence of the  History below as a long format summary.
+        This will be given to an agent as its memory so format the same way so that it know what it was interacting with its user in the past.
+
 
         History:
         {history_string_for_llm}
         {connection_context}
 
-        Provide a concise, natural summary that captures the essential context needed to continue the conversation effectively.
-
         Briefing:
         """
         try:
-            self.log(f"Sending to summarizer LLM ({CONTEXT_SUMMARIZER_MODEL})...")
+            self.log(f"Sending to summarizer LLM ({CONTEXT_SUMMARIZER_MODEL}). Target session for history: {session_id_for_history if session_id_for_history else 'Any (Global)'})...") # Log added detail
             response = self.sync_openai_client.chat.completions.create(
                 model=CONTEXT_SUMMARIZER_MODEL,
                 messages=[{"role": "user", "content": prompt_for_summarizer}],
@@ -396,6 +390,7 @@ class OpenAISpeechClient:
                 self.log("Summarizer: No specific context to resume from history.")
                 return ""
             self.log(f"Summarizer LLM response: {summary}")
+            print( f"Summarizer LLM response: {summary}")
             return f"Recent conversation summary: {summary}\n"
         except Exception as e:
             self.log(f"ERROR summarizing conversation history with LLM: {e}")
@@ -414,9 +409,9 @@ class OpenAISpeechClient:
         self._notify_frontend_connect()
         primed_context_parts = []
         # 1. Get conversation summary (uses self.session_id from *previous* connection)
-        if self.session_id:
-            conv_summary = self._get_conversation_summary(self.session_id)
-            if conv_summary: primed_context_parts.append(conv_summary)
+        
+        conv_summary = self._get_conversation_summary(session_id_for_history=None)
+        if conv_summary: primed_context_parts.append(conv_summary)
         else:
             self.log("No prior session_id for conversation history retrieval on this connection.")
 
@@ -429,7 +424,8 @@ class OpenAISpeechClient:
         if primed_context_parts:
             full_primed_context = "\n".join(primed_context_parts)
             self.log(f"Priming LLM with context:\n{full_primed_context}")
-            effective_instructions = full_primed_context + "\n---\n" + LLM_DEFAULT_INSTRUCTIONS
+            effective_instructions += "\n\n---\nIMPORTANT CONTEXT FROM PREVIOUS INTERACTIONS (Use this to inform your responses):\n" + full_primed_context + "\n--- END OF PREVIOUS CONTEXT ---"
+            self.log(f" Effective instruciton: \n{ effective_instructions}")
         else:
             self.log("No additional context (history summary or call updates) to prime LLM with.")
 
